@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { imageTools } from "@/config/imageTools";
+import ImageUploader from "./ImageUploader";
+import ImagePreview from "./ImagePreview";
+import ImageControls from "./ImageController";
 
 import {
   compressImage,
@@ -50,7 +53,14 @@ export default function ImageTool({ toolId }: Props) {
       ),
     [toolId]
   );
+   
+  const [originalPreview, setOriginalPreview] =
+  useState<string | null>(null);
 
+const [resultPreview, setResultPreview] =
+  useState<string | null>(null);
+
+  
   const [files, setFiles] = useState<File[]>([]);
   const [preview, setPreview] = useState<string | null>(null);
 
@@ -128,38 +138,44 @@ export default function ImageTool({ toolId }: Props) {
     );
   }
 
-  function handleFiles(selected: FileList | null) {
-    if (!selected) {
-      return;
-    }
-
-    const selectedFiles = Array.from(selected);
-
-    if (!selectedFiles.length) {
-      return;
-    }
-
-    /*
-     * Some tools need multiple images while others need only one.
-     * We still preserve all selected files because overlay/collage/merge
-     * can use them.
-     */
-    setFiles(selectedFiles);
-
-    setResult(null);
-    setResultFiles([]);
-    setMetadata(null);
-    setDataURL("");
-    setError("");
-
-    /*
-     * Don't manually revoke the previous URL here.
-     * The preview useEffect handles cleanup.
-     */
-    const url = URL.createObjectURL(selectedFiles[0]);
-
-    setPreview(url);
+  function handleFiles(
+  selectedFiles: File[]
+) {
+  if (!selectedFiles.length) {
+    return;
   }
+
+  if (originalPreview) {
+    URL.revokeObjectURL(
+      originalPreview
+    );
+  }
+
+  if (resultPreview) {
+    URL.revokeObjectURL(
+      resultPreview
+    );
+  }
+
+  setFiles(selectedFiles);
+
+  setResult(null);
+  setResultFiles([]);
+  setMetadata(null);
+  setDataURL("");
+  setError("");
+
+  const previewUrl =
+    URL.createObjectURL(
+      selectedFiles[0]
+    );
+
+  setOriginalPreview(
+    previewUrl
+  );
+
+  setResultPreview(null);
+}
 
   async function process() {
     /*
@@ -936,32 +952,11 @@ export default function ImageTool({ toolId }: Props) {
       {/* -------------------------------------------------------
           Upload
       -------------------------------------------------------- */}
-
-      <section className="rounded-2xl border bg-background p-6">
-        <label className="flex min-h-52 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center transition hover:bg-muted/40">
-          <span className="text-lg font-semibold">
-            Upload Image
-          </span>
-
-          <span className="mt-2 text-sm text-muted-foreground">
-            {definition.multiple
-              ? "Select one or more images"
-              : "Select an image"}
-          </span>
-
-          <input
-            type="file"
-            accept="image/*"
-            multiple={definition.multiple}
-            onChange={(event) =>
-              handleFiles(
-                event.target.files
-              )
-            }
-            className="hidden"
-          />
-        </label>
-      </section>
+        <ImageUploader
+  multiple={definition.multiple}
+  onFilesSelected={handleFiles}
+  disabled={loading}
+/>
 
       {/* -------------------------------------------------------
           File Info

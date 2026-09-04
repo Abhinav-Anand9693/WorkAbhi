@@ -571,6 +571,6 @@ export const tools: Tool[] = [
     "Collage Maker",
     "Create collages from multiple images.",
     true
-  ),
+  )
 
 ];

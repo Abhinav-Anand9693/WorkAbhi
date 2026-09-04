@@ -67,14 +67,8 @@ type Values = Record<
   string
 >;
 
-type ResultValue =
-  | string
-  | number;
+type Result = object;
 
-type Result = Record<
-  string,
-  ResultValue
->;
 
 export default function CalculatorTool({
   toolId
@@ -504,58 +498,47 @@ export default function CalculatorTool({
   }
 
   function formatValue(
-    key: string,
-    value: ResultValue
-  ) {
-    if (
-      typeof value ===
-      "number"
-    ) {
-      const moneyKeys = [
-        "monthlyEMI",
-        "totalInterest",
-        "totalPayment",
-        "principal",
-        "interest",
-        "amount",
-        "maturity",
-        "invested",
-        "returns",
-        "futureValue",
-        "increase",
-        "discountAmount",
-        "finalPrice",
-        "profit",
-        "annualCTC",
-        "annualDeductions",
-        "annualTakeHome",
-        "monthlyTakeHome",
-        "baseAmount",
-        "gst",
-        "total"
-      ];
+  key: string,
+  value: unknown
+) {
+  if (typeof value === "number") {
+    const moneyKeys = [
+      "monthlyEMI",
+      "totalInterest",
+      "totalPayment",
+      "principal",
+      "interest",
+      "amount",
+      "maturity",
+      "invested",
+      "returns",
+      "futureValue",
+      "increase",
+      "discountAmount",
+      "finalPrice",
+      "profit",
+      "annualCTC",
+      "annualDeductions",
+      "annualTakeHome",
+      "monthlyTakeHome",
+      "baseAmount",
+      "gst",
+      "total"
+    ];
 
-      if (
-        moneyKeys.includes(key)
-      ) {
-        return `₹${value.toLocaleString(
-          "en-IN",
-          {
-            maximumFractionDigits: 2
-          }
-        )}`;
-      }
-
-      return value.toLocaleString(
-        "en-IN",
-        {
-          maximumFractionDigits: 2
-        }
-      );
+    if (moneyKeys.includes(key)) {
+      return `₹${value.toLocaleString("en-IN", {
+        maximumFractionDigits: 2
+      })}`;
     }
 
-    return value;
+    return value.toLocaleString("en-IN", {
+      maximumFractionDigits: 2
+    });
   }
+
+  return String(value);
+}
 
   return (
     <div className="
