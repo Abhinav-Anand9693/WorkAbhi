@@ -31,11 +31,12 @@ export default function Navbar() {
 
   return (
     <header
-      className="
-        sticky top-0 z-50
-        border-b border-border/70
-        bg-background
-      "
+  className="
+    sticky top-0 z-50
+    border-b border-border/70
+    bg-background/95
+    backdrop-blur-md
+  "
     >
       <Container
         className="
@@ -98,12 +99,15 @@ export default function Navbar() {
           {/* =========================
               CALCULATORS DROPDOWN
           ========================== */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() =>
-                toggleDropdown("calculators")
-              }
+          <div
+  className="relative"
+  onMouseEnter={() =>
+    setOpenDropdown("calculators")
+  }
+  onMouseLeave={closeDropdown}
+>
+  <button
+    type="button"
               aria-expanded={
                 openDropdown === "calculators"
               }
