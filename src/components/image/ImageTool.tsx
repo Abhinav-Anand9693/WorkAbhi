@@ -1677,50 +1677,26 @@ async function handlePreviewClick(
       )}
 
       {/* =====================================
-          PREVIEW
+          IMAGE PREVIEW
       ====================================== */}
 
-     {toolId === "image-color-picker" &&
-  originalPreview && (
-    <div className="rounded-2xl border bg-background p-5">
-      <h3 className="font-semibold">
-        Pick a color
-      </h3>
-
-      <p className="mt-1 text-sm text-muted-foreground">
-        Click anywhere on the image.
-      </p>
-
-      <Image
-        src={originalPreview}
-        alt="Color picker"
-        onClick={handlePreviewClick}
-        className="mt-5 max-h-[650px] w-full cursor-crosshair rounded-xl object-contain"
-      />
-
-      {pickedColor && (
-        <div className="mt-5 flex items-center gap-4">
-          <div
-            className="h-14 w-14 rounded-xl border"
-            style={{
-              backgroundColor:
-                pickedColor,
-            }}
+     {files.length > 0 &&
+        toolId !== "image-color-picker" &&
+        toolId !== "image-metadata-viewer" &&
+        toolId !== "image-to-data-url" && (
+          <ImagePreview
+            originalPreview={originalPreview}
+            resultPreview={resultPreview}
+            originalName={files[0]?.name}
+            originalSize={files[0]?.size}
+            resultSize={result?.size}
+            result={result}
+            loading={loading}
+            onDownload={downloadResult}
+            onReset={resetTool}
           />
+        )}
 
-          <div>
-            <p className="text-xs text-muted-foreground">
-              HEX
-            </p>
-
-            <p className="font-mono text-lg font-semibold">
-              {pickedColor}
-            </p>
-          </div>
-        </div>
-      )}
-    </div>
-  )}
 
       {/* =====================================
           SPLIT RESULTS
