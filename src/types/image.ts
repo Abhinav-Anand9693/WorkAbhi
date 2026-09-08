@@ -14,7 +14,7 @@ export type ImageToolMode =
   | "merge"
   | "color-picker"
   | "metadata"
-  | "data-url";
+  | "data-url"
 
 export type ImageOutputFormat =
   | "image/jpeg"

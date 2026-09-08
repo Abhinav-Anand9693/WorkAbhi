@@ -1,35 +1,27 @@
 "use client";
 
-import type {
-  ImageToolDefinition,
-} from "@/types/image";
+import type { ImageToolDefinition } from "@/types/image";
 
-interface ImageControlsProps {
+interface Props {
   definition: ImageToolDefinition;
 
   quality: number;
   setQuality: (value: number) => void;
 
-  width: string;
-  setWidth: (value: string) => void;
+  width: number;
+  setWidth: (value: number) => void;
 
-  height: string;
-  setHeight: (value: string) => void;
+  height: number;
+  setHeight: (value: number) => void;
 
-  percentage: string;
-  setPercentage: (value: string) => void;
+  percentage: number;
+  setPercentage: (value: number) => void;
 
-  rotation: string;
-  setRotation: (value: string) => void;
+  rotate: number;
+  setRotate: (value: number) => void;
 
-  flipDirection:
-    | "horizontal"
-    | "vertical";
-  setFlipDirection: (
-    value:
-      | "horizontal"
-      | "vertical"
-  ) => void;
+  flip: "horizontal" | "vertical";
+  setFlip: (value: "horizontal" | "vertical") => void;
 
   effectValue: number;
   setEffectValue: (value: number) => void;
@@ -71,342 +63,433 @@ interface ImageControlsProps {
   setTextColor: (value: string) => void;
 
   watermarkOpacity: number;
-  setWatermarkOpacity: (
-    value: number
-  ) => void;
+  setWatermarkOpacity: (value: number) => void;
 
-  cropX: string;
-  setCropX: (value: string) => void;
+  cropX: number;
+  setCropX: (value: number) => void;
 
-  cropY: string;
-  setCropY: (value: string) => void;
+  cropY: number;
+  setCropY: (value: number) => void;
 
-  cropWidth: string;
-  setCropWidth: (value: string) => void;
+  cropWidth: number;
+  setCropWidth: (value: number) => void;
 
-  cropHeight: string;
-  setCropHeight: (value: string) => void;
+  cropHeight: number;
+  setCropHeight: (value: number) => void;
 
   onProcess: () => void;
   loading?: boolean;
-  error?: string;
 }
 
-export default function ImageControls(
-  props: ImageControlsProps
-) {
-  const {
-    definition,
+function NumberField({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="space-y-2">
+      <span className="text-sm font-medium">
+        {label}
+      </span>
 
-    quality,
-    setQuality,
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        onChange={(event) =>
+          onChange(Number(event.target.value))
+        }
+        className="w-full rounded-xl border bg-background px-3 py-2.5"
+      />
+    </label>
+  );
+}
 
-    width,
-    setWidth,
+function RangeField({
+  label,
+  value,
+  min,
+  max,
+  suffix,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  suffix?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="space-y-3">
+      <div className="flex justify-between">
+        <span className="text-sm font-medium">
+          {label}
+        </span>
 
-    height,
-    setHeight,
+        <span className="text-sm text-muted-foreground">
+          {value}
+          {suffix}
+        </span>
+      </div>
 
-    percentage,
-    setPercentage,
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) =>
+          onChange(Number(event.target.value))
+        }
+        className="w-full"
+      />
+    </label>
+  );
+}
 
-    rotation,
-    setRotation,
+function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="space-y-2">
+      <span className="text-sm font-medium">
+        {label}
+      </span>
 
-    flipDirection,
-    setFlipDirection,
+      <div className="flex gap-2">
+        <input
+          type="color"
+          value={value}
+          onChange={(event) =>
+            onChange(event.target.value)
+          }
+          className="h-11 w-14 rounded-lg border"
+        />
 
-    effectValue,
-    setEffectValue,
+        <input
+          type="text"
+          value={value}
+          onChange={(event) =>
+            onChange(event.target.value)
+          }
+          className="flex-1 rounded-xl border bg-background px-3 py-2"
+        />
+      </div>
+    </label>
+  );
+}
 
-    brightness,
-    setBrightness,
+export default function ImageControls({
+  definition,
 
-    contrast,
-    setContrast,
+  quality,
+  setQuality,
 
-    saturation,
-    setSaturation,
+  width,
+  setWidth,
 
-    hue,
-    setHue,
+  height,
+  setHeight,
 
-    exposure,
-    setExposure,
+  percentage,
+  setPercentage,
 
-    opacity,
-    setOpacity,
+  rotate,
+  setRotate,
 
-    borderSize,
-    setBorderSize,
+  flip,
+  setFlip,
 
-    borderColor,
-    setBorderColor,
+  effectValue,
+  setEffectValue,
 
-    radius,
-    setRadius,
+  brightness,
+  setBrightness,
 
-    text,
-    setText,
+  contrast,
+  setContrast,
 
-    textSize,
-    setTextSize,
+  saturation,
+  setSaturation,
 
-    textColor,
-    setTextColor,
+  hue,
+  setHue,
 
-    watermarkOpacity,
-    setWatermarkOpacity,
+  exposure,
+  setExposure,
 
-    cropX,
-    setCropX,
+  opacity,
+  setOpacity,
 
-    cropY,
-    setCropY,
+  borderSize,
+  setBorderSize,
 
-    cropWidth,
-    setCropWidth,
+  borderColor,
+  setBorderColor,
 
-    cropHeight,
-    setCropHeight,
+  radius,
+  setRadius,
 
-    onProcess,
-    loading,
-    error,
-  } = props;
+  text,
+  setText,
+
+  textSize,
+  setTextSize,
+
+  textColor,
+  setTextColor,
+
+  watermarkOpacity,
+  setWatermarkOpacity,
+
+  cropX,
+  setCropX,
+
+  cropY,
+  setCropY,
+
+  cropWidth,
+  setCropWidth,
+
+  cropHeight,
+  setCropHeight,
+
+  onProcess,
+  loading = false,
+}: Props) {
+  const id = definition.toolId;
+
+  const targetSizes: Record<string, string> = {
+    "compress-image-to-50kb": "50 KB",
+    "compress-image-to-100kb": "100 KB",
+    "compress-image-to-200kb": "200 KB",
+    "compress-image-to-500kb": "500 KB",
+    "compress-image-to-1mb": "1 MB",
+  };
+
+  const isTargetCompression =
+    id in targetSizes;
+
+  const isQualityTool =
+    id === "image-compressor" ||
+    id === "jpg-compressor" ||
+    id === "webp-compressor";
 
   return (
-    <section className="rounded-2xl border bg-background p-6">
+    <section className="rounded-2xl border bg-background p-5 sm:p-6">
       <div className="mb-6">
         <h2 className="text-lg font-semibold">
-          {definition.title} Settings
+          {definition.title}
         </h2>
 
         <p className="mt-1 text-sm text-muted-foreground">
-          Adjust the settings and process your image.
+          {definition.description}
         </p>
       </div>
 
-      <div className="space-y-5">
-        {definition.mode ===
-          "compress" && (
-          <RangeControl
-            label="Quality"
+      {isTargetCompression && (
+        <div className="mb-6 rounded-xl border bg-muted/30 p-4">
+          <p className="text-sm text-muted-foreground">
+            Target file size
+          </p>
+
+          <p className="mt-1 text-2xl font-bold">
+            {targetSizes[id]}
+          </p>
+
+          <p className="mt-1 text-xs text-muted-foreground">
+            The browser will automatically adjust
+            quality and dimensions.
+          </p>
+        </div>
+      )}
+
+      <div className="grid gap-5 sm:grid-cols-2">
+        {isQualityTool && (
+          <RangeField
+            label="Image Quality"
             value={quality}
-            min={10}
+            min={5}
             max={100}
             suffix="%"
             onChange={setQuality}
           />
         )}
 
-        {definition.mode ===
-          "resize" && (
+        {id === "image-resizer" && (
           <>
-            {definition.toolId !==
-              "resize-image-by-height" &&
-              definition.toolId !==
-                "resize-image-by-percentage" && (
-                <NumberControl
-                  label="Width"
-                  value={width}
-                  placeholder="e.g. 1200"
-                  onChange={
-                    setWidth
-                  }
-                />
-              )}
+            <NumberField
+              label="Maximum Width"
+              value={width}
+              min={1}
+              onChange={setWidth}
+            />
 
-            {definition.toolId !==
-              "resize-image-by-width" &&
-              definition.toolId !==
-                "resize-image-by-percentage" && (
-                <NumberControl
-                  label="Height"
-                  value={height}
-                  placeholder="e.g. 800"
-                  onChange={
-                    setHeight
-                  }
-                />
-              )}
-
-            {definition.toolId ===
-              "image-resizer" && (
-              <div className="rounded-lg bg-muted/40 p-3 text-sm text-muted-foreground">
-                Enter width and/or height.
-                The image will be resized while
-                preserving the requested dimensions.
-              </div>
-            )}
-
-            {definition.toolId ===
-              "resize-image-by-percentage" && (
-              <NumberControl
-                label="Resize Percentage"
-                value={percentage}
-                placeholder="e.g. 50"
-                onChange={
-                  setPercentage
-                }
-              />
-            )}
+            <NumberField
+              label="Maximum Height"
+              value={height}
+              min={1}
+              onChange={setHeight}
+            />
           </>
         )}
 
-        {definition.mode ===
-          "crop" &&
-          definition.toolId !==
-            "circular-image-cropper" && (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <NumberControl
-                label="X"
-                value={cropX}
-                onChange={
-                  setCropX
-                }
-              />
-
-              <NumberControl
-                label="Y"
-                value={cropY}
-                onChange={
-                  setCropY
-                }
-              />
-
-              <NumberControl
-                label="Width"
-                value={cropWidth}
-                placeholder="Crop width"
-                onChange={
-                  setCropWidth
-                }
-              />
-
-              <NumberControl
-                label="Height"
-                value={cropHeight}
-                placeholder="Crop height"
-                onChange={
-                  setCropHeight
-                }
-              />
-            </div>
-          )}
-
-        {definition.toolId ===
-          "circular-image-cropper" && (
-          <div className="rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
-            The tool automatically creates a
-            centered circular crop using the
-            largest possible square area.
-          </div>
-        )}
-
-        {definition.toolId ===
-          "image-rotator" && (
-          <SelectControl
-            label="Rotation"
-            value={rotation}
-            onChange={setRotation}
-            options={[
-              {
-                label: "90°",
-                value: "90",
-              },
-              {
-                label: "180°",
-                value: "180",
-              },
-              {
-                label: "270°",
-                value: "270",
-              },
-            ]}
+        {id === "resize-image-by-width" && (
+          <NumberField
+            label="Width"
+            value={width}
+            min={1}
+            onChange={setWidth}
           />
         )}
 
-        {definition.toolId ===
-          "image-flipper" && (
-          <SelectControl
-            label="Flip Direction"
-            value={flipDirection}
-            onChange={(value) =>
-              setFlipDirection(
-                value as
-                  | "horizontal"
-                  | "vertical"
-              )
-            }
-            options={[
-              {
-                label: "Horizontal",
-                value: "horizontal",
-              },
-              {
-                label: "Vertical",
-                value: "vertical",
-              },
-            ]}
+        {id === "resize-image-by-height" && (
+          <NumberField
+            label="Height"
+            value={height}
+            min={1}
+            onChange={setHeight}
           />
         )}
 
-        {definition.mode ===
-          "effect" && (
-          <RangeControl
-            label="Effect Strength"
+        {id === "resize-image-by-percentage" && (
+          <RangeField
+            label="Percentage"
+            value={percentage}
+            min={1}
+            max={300}
+            suffix="%"
+            onChange={setPercentage}
+          />
+        )}
+
+        {id === "image-rotator" && (
+          <label className="space-y-2">
+            <span className="text-sm font-medium">
+              Rotation
+            </span>
+
+            <select
+              value={rotate}
+              onChange={(event) =>
+                setRotate(
+                  Number(event.target.value)
+                )
+              }
+              className="w-full rounded-xl border bg-background px-3 py-2.5"
+            >
+              <option value={90}>90°</option>
+              <option value={180}>180°</option>
+              <option value={270}>270°</option>
+            </select>
+          </label>
+        )}
+
+        {id === "image-flipper" && (
+          <label className="space-y-2">
+            <span className="text-sm font-medium">
+              Flip Direction
+            </span>
+
+            <select
+              value={flip}
+              onChange={(event) =>
+                setFlip(
+                  event.target.value as
+                    | "horizontal"
+                    | "vertical"
+                )
+              }
+              className="w-full rounded-xl border bg-background px-3 py-2.5"
+            >
+              <option value="horizontal">
+                Horizontal
+              </option>
+
+              <option value="vertical">
+                Vertical
+              </option>
+            </select>
+          </label>
+        )}
+
+        {id === "image-sharpening" && (
+          <RangeField
+            label="Sharpness"
+            value={effectValue}
+            min={1}
+            max={30}
+            onChange={setEffectValue}
+          />
+        )}
+
+        {id === "image-blur" && (
+          <RangeField
+            label="Blur"
+            value={effectValue}
+            min={1}
+            max={30}
+            onChange={setEffectValue}
+          />
+        )}
+
+        {id === "pixelate-image" && (
+          <RangeField
+            label="Pixel Size"
             value={effectValue}
             min={2}
             max={30}
-            onChange={
-              setEffectValue
-            }
+            onChange={setEffectValue}
           />
         )}
 
-        {definition.toolId ===
-          "brightness-adjuster" && (
-          <RangeControl
+        {id === "brightness-adjuster" && (
+          <RangeField
             label="Brightness"
             value={brightness}
-            min={0}
-            max={200}
-            onChange={
-              setBrightness
-            }
+            min={-100}
+            max={100}
+            onChange={setBrightness}
           />
         )}
 
-        {definition.toolId ===
-          "contrast-adjuster" && (
-          <RangeControl
+        {id === "contrast-adjuster" && (
+          <RangeField
             label="Contrast"
             value={contrast}
-            min={0}
-            max={200}
-            onChange={
-              setContrast
-            }
+            min={-100}
+            max={100}
+            onChange={setContrast}
           />
         )}
 
-        {definition.toolId ===
-          "saturation-adjuster" && (
-          <RangeControl
+        {id === "saturation-adjuster" && (
+          <RangeField
             label="Saturation"
             value={saturation}
-            min={0}
-            max={200}
-            onChange={
-              setSaturation
-            }
+            min={-100}
+            max={100}
+            onChange={setSaturation}
           />
         )}
 
-        {definition.toolId ===
-          "hue-adjuster" && (
-          <RangeControl
+        {id === "hue-adjuster" && (
+          <RangeField
             label="Hue"
             value={hue}
             min={-180}
@@ -416,413 +499,167 @@ export default function ImageControls(
           />
         )}
 
-        {definition.toolId ===
-          "exposure-adjuster" && (
-          <RangeControl
+        {id === "exposure-adjuster" && (
+          <RangeField
             label="Exposure"
             value={exposure}
-            min={-3}
-            max={3}
-            step={1}
-            onChange={
-              setExposure
-            }
+            min={-100}
+            max={100}
+            onChange={setExposure}
           />
         )}
 
-        {definition.toolId ===
-          "opacity-adjuster" && (
-          <RangeControl
+        {id === "opacity-adjuster" && (
+          <RangeField
             label="Opacity"
             value={opacity}
             min={0}
             max={100}
             suffix="%"
-            onChange={
-              setOpacity
-            }
+            onChange={setOpacity}
           />
         )}
 
-        {definition.toolId ===
-          "image-border-generator" && (
+        {id === "image-border-generator" && (
           <>
-            <NumberControl
+            <NumberField
               label="Border Size"
-              value={String(
-                borderSize
-              )}
-              onChange={(value) =>
-                setBorderSize(
-                  Number(value)
-                )
-              }
+              value={borderSize}
+              min={1}
+              max={300}
+              onChange={setBorderSize}
             />
 
-            <ColorControl
+            <ColorField
               label="Border Color"
               value={borderColor}
-              onChange={
-                setBorderColor
-              }
+              onChange={setBorderColor}
             />
           </>
         )}
 
-        {definition.toolId ===
-          "rounded-corners" && (
-          <RangeControl
+        {id === "rounded-corners" && (
+          <RangeField
             label="Corner Radius"
             value={radius}
             min={0}
-            max={300}
+            max={500}
+            suffix="px"
             onChange={setRadius}
           />
         )}
 
-        {(definition.toolId ===
-          "image-watermark" ||
-          definition.toolId ===
-            "add-text-to-image") && (
+        {id === "add-text-to-image" && (
           <>
-            <TextControl
-              label="Text"
-              value={text}
-              placeholder="Enter text"
-              onChange={setText}
+            <label className="space-y-2 sm:col-span-2">
+              <span className="text-sm font-medium">
+                Text
+              </span>
+
+              <input
+                type="text"
+                value={text}
+                onChange={(event) =>
+                  setText(event.target.value)
+                }
+                className="w-full rounded-xl border bg-background px-3 py-2.5"
+                placeholder="Enter text"
+              />
+            </label>
+
+            <NumberField
+              label="Text Size"
+              value={textSize}
+              min={8}
+              max={500}
+              onChange={setTextSize}
             />
 
-            <NumberControl
-              label="Font Size"
-              value={String(
-                textSize
-              )}
-              onChange={(value) =>
-                setTextSize(
-                  Number(value)
-                )
-              }
-            />
-
-            <ColorControl
+            <ColorField
               label="Text Color"
               value={textColor}
-              onChange={
-                setTextColor
-              }
+              onChange={setTextColor}
             />
           </>
         )}
 
-        {definition.toolId ===
-          "image-watermark" && (
-          <RangeControl
-            label="Watermark Opacity"
-            value={Math.round(
-              watermarkOpacity *
-                100
-            )}
-            min={10}
-            max={100}
-            suffix="%"
-            onChange={(value) =>
-              setWatermarkOpacity(
-                value / 100
-              )
-            }
-          />
+        {id === "image-watermark" && (
+          <>
+            <label className="space-y-2 sm:col-span-2">
+              <span className="text-sm font-medium">
+                Watermark Text
+              </span>
+
+              <input
+                type="text"
+                value={text}
+                onChange={(event) =>
+                  setText(event.target.value)
+                }
+                className="w-full rounded-xl border bg-background px-3 py-2.5"
+              />
+            </label>
+
+            <RangeField
+              label="Watermark Opacity"
+              value={watermarkOpacity}
+              min={5}
+              max={100}
+              suffix="%"
+              onChange={setWatermarkOpacity}
+            />
+          </>
         )}
 
-        {(definition.toolId ===
-          "image-overlay" ||
-          definition.toolId ===
-            "image-collage-maker" ||
-          definition.toolId ===
-            "image-merger") && (
-          <div className="rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
-            Select multiple images above,
-            then click Process Image.
-          </div>
-        )}
+        {id === "image-cropper" && (
+          <>
+            <NumberField
+              label="X"
+              value={cropX}
+              min={0}
+              onChange={setCropX}
+            />
 
-        {definition.toolId ===
-          "image-splitter" && (
-          <div className="rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
-            The image will be split into
-            multiple sections.
-          </div>
-        )}
+            <NumberField
+              label="Y"
+              value={cropY}
+              min={0}
+              onChange={setCropY}
+            />
 
-        {definition.toolId ===
-          "image-color-picker" && (
-          <div className="rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
-            Color picking interaction will
-            be available on the image preview.
-          </div>
-        )}
+            <NumberField
+              label="Width"
+              value={cropWidth}
+              min={1}
+              onChange={setCropWidth}
+            />
 
-        {definition.toolId ===
-          "image-metadata-viewer" && (
-          <div className="rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
-            Click Process Image to inspect
-            the selected image.
-          </div>
-        )}
-
-        {definition.toolId ===
-          "exif-remover" && (
-          <div className="rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
-            The image will be recreated in
-            the browser to remove embedded
-            metadata.
-          </div>
-        )}
-
-        {definition.toolId ===
-          "image-to-data-url" && (
-          <div className="rounded-lg bg-muted/40 p-4 text-sm text-muted-foreground">
-            Convert your image into a Data URL
-            without uploading it.
-          </div>
+            <NumberField
+              label="Height"
+              value={cropHeight}
+              min={1}
+              onChange={setCropHeight}
+            />
+          </>
         )}
       </div>
 
-      {error && (
-        <div
-          role="alert"
-          className="mt-5 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-700"
+      {!(
+        id === "image-color-picker" ||
+        id === "image-metadata-viewer" ||
+        id === "image-to-data-url"
+      ) && (
+        <button
+          type="button"
+          onClick={onProcess}
+          disabled={loading}
+          className="mt-6 rounded-xl bg-primary px-6 py-3 font-semibold text-primary-foreground disabled:opacity-50"
         >
-          {error}
-        </div>
+          {loading
+            ? "Processing..."
+            : "Process Image"}
+        </button>
       )}
-
-      <button
-        type="button"
-        onClick={onProcess}
-        disabled={loading}
-        className="mt-6 w-full rounded-xl bg-foreground px-6 py-3 font-medium text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {loading
-          ? "Processing..."
-          : definition.mode ===
-              "metadata"
-            ? "Read Image"
-            : definition.mode ===
-                "data-url"
-              ? "Generate Data URL"
-              : "Process Image"}
-      </button>
     </section>
-  );
-}
-
-function NumberControl({
-  label,
-  value,
-  placeholder,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  placeholder?: string;
-  onChange: (
-    value: string
-  ) => void;
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium">
-        {label}
-      </label>
-
-      <input
-        type="number"
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) =>
-          onChange(
-            event.target.value
-          )
-        }
-        className="mt-2 w-full rounded-lg border bg-background px-3 py-2.5 outline-none transition focus:ring-2 focus:ring-foreground/20"
-      />
-    </div>
-  );
-}
-
-function TextControl({
-  label,
-  value,
-  placeholder,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  placeholder?: string;
-  onChange: (
-    value: string
-  ) => void;
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium">
-        {label}
-      </label>
-
-      <input
-        type="text"
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) =>
-          onChange(
-            event.target.value
-          )
-        }
-        className="mt-2 w-full rounded-lg border bg-background px-3 py-2.5 outline-none transition focus:ring-2 focus:ring-foreground/20"
-      />
-    </div>
-  );
-}
-
-function RangeControl({
-  label,
-  value,
-  min,
-  max,
-  step = 1,
-  suffix,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  suffix?: string;
-  onChange: (
-    value: number
-  ) => void;
-}) {
-  return (
-    <div>
-      <div className="flex items-center justify-between">
-        <label className="text-sm font-medium">
-          {label}
-        </label>
-
-        <span className="text-sm text-muted-foreground">
-          {value}
-          {suffix ?? ""}
-        </span>
-      </div>
-
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(event) =>
-          onChange(
-            Number(
-              event.target.value
-            )
-          )
-        }
-        className="mt-3 w-full"
-      />
-    </div>
-  );
-}
-
-function SelectControl({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string;
-  value: string;
-  onChange: (
-    value: string
-  ) => void;
-  options: {
-    label: string;
-    value: string;
-  }[];
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium">
-        {label}
-      </label>
-
-      <select
-        value={value}
-        onChange={(event) =>
-          onChange(
-            event.target.value
-          )
-        }
-        className="mt-2 w-full rounded-lg border bg-background px-3 py-2.5"
-      >
-        {options.map(
-          (option) => (
-            <option
-              key={option.value}
-              value={
-                option.value
-              }
-            >
-              {option.label}
-            </option>
-          )
-        )}
-      </select>
-    </div>
-  );
-}
-
-function ColorControl({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (
-    value: string
-  ) => void;
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium">
-        {label}
-      </label>
-
-      <div className="mt-2 flex gap-3">
-        <input
-          type="color"
-          value={value}
-          onChange={(event) =>
-            onChange(
-              event.target.value
-            )
-          }
-          className="h-10 w-14 cursor-pointer rounded-lg border p-1"
-        />
-
-        <input
-          type="text"
-          value={value}
-          onChange={(event) =>
-            onChange(
-              event.target.value
-            )
-          }
-          className="flex-1 rounded-lg border px-3 py-2 font-mono text-sm"
-        />
-      </div>
-    </div>
   );
 }

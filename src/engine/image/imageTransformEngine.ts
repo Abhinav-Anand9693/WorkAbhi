@@ -1,15 +1,15 @@
-import type {
-  ImageAdjustOptions,
-  ImageBorderOptions,
-  ImageTransformOptions,
-} from "@/types/image";
+"use client";
 
-export function loadImage(
-  file: File | Blob
+export interface TransformOptions {
+  rotate?: number;
+  flip?: "horizontal" | "vertical";
+}
+
+function loadImage(
+  source: File | Blob
 ): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-
+    const url = URL.createObjectURL(source);
     const image = new Image();
 
     image.onload = () => {
@@ -26,337 +26,159 @@ export function loadImage(
   });
 }
 
-export function canvasToBlob(
+function canvasToBlob(
   canvas: HTMLCanvasElement,
-  mimeType = "image/jpeg",
-  quality = 0.9
+  type: "image/jpeg" | "image/png" | "image/webp" = "image/png",
+  quality = 0.92
 ): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
         if (!blob) {
-          reject(new Error("Unable to create image."));
+          reject(
+            new Error("Unable to create image.")
+          );
           return;
         }
 
         resolve(blob);
       },
-      mimeType,
+      type,
       quality
     );
   });
 }
 
-export function createCanvas(
-  width: number,
-  height: number
-): HTMLCanvasElement {
-  const canvas = document.createElement("canvas");
+export async function createCanvasFromImage(
+  source: File | Blob
+) {
+  const image = await loadImage(source);
 
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
+  const canvas =
+    document.createElement("canvas");
 
-  return canvas;
-}
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
 
-export function resizeCanvasImage(
-  image: HTMLImageElement,
-  width: number,
-  height: number,
-  mimeType = "image/jpeg",
-  quality = 0.9
-): Promise<Blob> {
-  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
 
-  const context = canvas.getContext("2d");
-
-  if (!context) {
-    throw new Error("Canvas is not supported.");
-  }
-
-  context.drawImage(
-    image,
-    0,
-    0,
-    width,
-    height
-  );
-
-  return canvasToBlob(
-    canvas,
-    mimeType,
-    quality
-  );
-}
-
-export function transformImage(
-  image: HTMLImageElement,
-  options: ImageTransformOptions & ImageAdjustOptions,
-  mimeType = "image/jpeg"
-): Promise<Blob> {
-  const rotation =
-    ((options.rotation ?? 0) % 360 + 360) % 360;
-
-  const sideways =
-    rotation === 90 ||
-    rotation === 270;
-
-  const width = image.naturalWidth;
-  const height = image.naturalHeight;
-
-  const canvas = createCanvas(
-    sideways ? height : width,
-    sideways ? width : height
-  );
-
-  const context = canvas.getContext("2d");
-
-  if (!context) {
-    throw new Error("Canvas is not supported.");
-  }
-
-  const brightness =
-    options.brightness ?? 100;
-
-  const contrast =
-    options.contrast ?? 100;
-
-  const saturation =
-    options.saturation ?? 100;
-
-  const hue =
-    options.hue ?? 0;
-
-  const exposure =
-    options.exposure ?? 0;
-
-  const opacity =
-    options.opacity ?? 100;
-
-  const blur =
-    options.blur ?? 0;
-
-  const filters: string[] = [
-    `brightness(${brightness}%)`,
-    `contrast(${contrast}%)`,
-    `saturate(${saturation}%)`,
-    `hue-rotate(${hue}deg)`,
-    `opacity(${opacity}%)`,
-  ];
-
-  if (exposure !== 0) {
-    const exposureValue =
-      Math.pow(2, exposure);
-
-    filters.push(
-      `brightness(${exposureValue * 100}%)`
+  if (!ctx) {
+    throw new Error(
+      "Canvas is not supported."
     );
   }
 
-  if (blur > 0) {
-    filters.push(`blur(${blur}px)`);
+  ctx.drawImage(image, 0, 0);
+
+  return {
+    canvas,
+    ctx,
+    image,
+  };
+}
+
+/* ==========================================
+   ROTATE / FLIP
+========================================== */
+
+export async function transformImage(
+  source: File | Blob,
+  options: TransformOptions
+): Promise<Blob> {
+  const image = await loadImage(source);
+
+  const rotation =
+    ((options.rotate ?? 0) % 360 + 360) %
+    360;
+
+  const horizontalFlip =
+    options.flip === "horizontal";
+
+  const verticalFlip =
+    options.flip === "vertical";
+
+  const rotated =
+    rotation === 90 ||
+    rotation === 270;
+
+  const canvas =
+    document.createElement("canvas");
+
+  canvas.width = rotated
+    ? image.naturalHeight
+    : image.naturalWidth;
+
+  canvas.height = rotated
+    ? image.naturalWidth
+    : image.naturalHeight;
+
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error(
+      "Canvas is not supported."
+    );
   }
 
-  if (options.grayscale) {
-    filters.push("grayscale(100%)");
-  }
-
-  context.save();
-
-  context.translate(
+  ctx.translate(
     canvas.width / 2,
     canvas.height / 2
   );
 
-  context.rotate(
+  ctx.rotate(
     (rotation * Math.PI) / 180
   );
 
-  context.scale(
-    options.flipHorizontal ? -1 : 1,
-    options.flipVertical ? -1 : 1
+  ctx.scale(
+    horizontalFlip ? -1 : 1,
+    verticalFlip ? -1 : 1
   );
 
-  context.filter = filters.join(" ");
-
-  context.drawImage(
+  ctx.drawImage(
     image,
-    -width / 2,
-    -height / 2,
-    width,
-    height
+    -image.naturalWidth / 2,
+    -image.naturalHeight / 2
   );
-
-  context.restore();
-
-  if (options.blackAndWhite) {
-    convertCanvasToBlackAndWhite(canvas);
-  }
-
-  if (options.pixelate) {
-    pixelateCanvas(
-      canvas,
-      options.pixelate
-    );
-  }
-
-  if (options.sharpen) {
-    sharpenCanvas(
-      canvas,
-      options.sharpen
-    );
-  }
 
   return canvasToBlob(
     canvas,
-    mimeType,
-    0.92
+    "image/png"
   );
 }
 
-function convertCanvasToBlackAndWhite(
-  canvas: HTMLCanvasElement
-) {
-  const context = canvas.getContext("2d");
+/* ==========================================
+   SHARPEN
+========================================== */
 
-  if (!context) return;
-
-  const imageData = context.getImageData(
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
-
-  const data = imageData.data;
-
-  for (let index = 0; index < data.length; index += 4) {
-    const average =
-      0.299 * data[index] +
-      0.587 * data[index + 1] +
-      0.114 * data[index + 2];
-
-    const value =
-      average >= 128 ? 255 : 0;
-
-    data[index] = value;
-    data[index + 1] = value;
-    data[index + 2] = value;
-  }
-
-  context.putImageData(
-    imageData,
-    0,
-    0
-  );
-}
-
-export function pixelateCanvas(
-  canvas: HTMLCanvasElement,
-  pixelSize = 10
-) {
-  const context = canvas.getContext("2d");
-
-  if (!context) return;
-
-  const width = canvas.width;
-  const height = canvas.height;
-
-  const imageData = context.getImageData(
-    0,
-    0,
-    width,
-    height
-  );
-
-  const data = imageData.data;
-
-  for (
-    let y = 0;
-    y < height;
-    y += pixelSize
-  ) {
-    for (
-      let x = 0;
-      x < width;
-      x += pixelSize
-    ) {
-      const index =
-        (y * width + x) * 4;
-
-      const red = data[index] ?? 0;
-      const green = data[index + 1] ?? 0;
-      const blue = data[index + 2] ?? 0;
-
-      for (
-        let py = y;
-        py < Math.min(y + pixelSize, height);
-        py++
-      ) {
-        for (
-          let px = x;
-          px < Math.min(x + pixelSize, width);
-          px++
-        ) {
-          const target =
-            (py * width + px) * 4;
-
-          data[target] = red;
-          data[target + 1] = green;
-          data[target + 2] = blue;
-        }
-      }
-    }
-  }
-
-  context.putImageData(
-    imageData,
-    0,
-    0
-  );
-}
-
-export function sharpenCanvas(
-  canvas: HTMLCanvasElement,
+export async function sharpenCanvas(
+  source: File | Blob,
   strength = 1
-) {
-  const context = canvas.getContext("2d");
+): Promise<Blob> {
+  const { canvas, ctx } =
+    await createCanvasFromImage(
+      source
+    );
 
-  if (!context) return;
+  const imageData =
+    ctx.getImageData(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+  const src = imageData.data;
+  const output = new Uint8ClampedArray(
+    src
+  );
+
+  const amount = Math.min(
+    1,
+    Math.max(0.1, strength / 10)
+  );
 
   const width = canvas.width;
   const height = canvas.height;
-
-  const source = context.getImageData(
-    0,
-    0,
-    width,
-    height
-  );
-
-  const output = context.createImageData(
-    width,
-    height
-  );
-
-  const input = source.data;
-  const result = output.data;
-
-  const center = 1 + strength * 4;
-
-  const kernel = [
-    0,
-    -strength,
-    0,
-
-    -strength,
-    center,
-    -strength,
-
-    0,
-    -strength,
-    0,
-  ];
 
   for (
     let y = 1;
@@ -368,95 +190,120 @@ export function sharpenCanvas(
       x < width - 1;
       x++
     ) {
-      let red = 0;
-      let green = 0;
-      let blue = 0;
-
-      let kernelIndex = 0;
-
-      for (
-        let ky = -1;
-        ky <= 1;
-        ky++
-      ) {
-        for (
-          let kx = -1;
-          kx <= 1;
-          kx++
-        ) {
-          const sourceIndex =
-            ((y + ky) * width +
-              (x + kx)) *
-            4;
-
-          const weight =
-            kernel[kernelIndex++];
-
-          red +=
-            input[sourceIndex] * weight;
-
-          green +=
-            input[sourceIndex + 1] * weight;
-
-          blue +=
-            input[sourceIndex + 2] * weight;
-        }
-      }
-
-      const targetIndex =
+      const index =
         (y * width + x) * 4;
 
-      result[targetIndex] =
-        Math.max(0, Math.min(255, red));
+      for (let channel = 0; channel < 3; channel++) {
+        const center =
+          src[index + channel];
 
-      result[targetIndex + 1] =
-        Math.max(0, Math.min(255, green));
+        const top =
+          src[
+            ((y - 1) * width + x) *
+              4 +
+              channel
+          ];
 
-      result[targetIndex + 2] =
-        Math.max(0, Math.min(255, blue));
+        const bottom =
+          src[
+            ((y + 1) * width + x) *
+              4 +
+              channel
+          ];
 
-      result[targetIndex + 3] =
-        input[targetIndex + 3];
+        const left =
+          src[
+            (y * width + x - 1) *
+              4 +
+              channel
+          ];
+
+        const right =
+          src[
+            (y * width + x + 1) *
+              4 +
+              channel
+          ];
+
+        const sharpened =
+          center * (1 + 4 * amount) -
+          (top +
+            bottom +
+            left +
+            right) *
+            amount;
+
+        output[index + channel] =
+          Math.max(
+            0,
+            Math.min(
+              255,
+              sharpened
+            )
+          );
+      }
     }
   }
 
-  context.putImageData(
-    output,
+  imageData.data.set(output);
+
+  ctx.putImageData(
+    imageData,
     0,
     0
   );
+
+  return canvasToBlob(
+    canvas,
+    "image/png"
+  );
 }
 
-export function addBorder(
-  image: HTMLImageElement,
-  options: ImageBorderOptions
+/* ==========================================
+   BORDER
+========================================== */
+
+export async function addBorder(
+  source: File | Blob,
+  borderSize = 10,
+  borderColor = "#000000"
 ): Promise<Blob> {
+  const image = await loadImage(source);
+
   const size = Math.max(
     0,
-    Math.round(options.size)
+    Math.round(borderSize)
   );
 
-  const canvas = createCanvas(
-    image.naturalWidth + size * 2,
-    image.naturalHeight + size * 2
-  );
+  const canvas =
+    document.createElement("canvas");
 
-  const context = canvas.getContext("2d");
+  canvas.width =
+    image.naturalWidth + size * 2;
 
-  if (!context) {
-    throw new Error("Canvas is not supported.");
+  canvas.height =
+    image.naturalHeight + size * 2;
+
+  const ctx =
+    canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error(
+      "Canvas is not supported."
+    );
   }
 
-  context.fillStyle = options.color;
+  ctx.fillStyle =
+    borderColor;
 
-  context.fillRect(
+  ctx.fillRect(
     0,
     0,
     canvas.width,
     canvas.height
   );
 
-  context.drawImage(
+  ctx.drawImage(
     image,
     size,
     size
@@ -464,86 +311,90 @@ export function addBorder(
 
   return canvasToBlob(
     canvas,
-    "image/png",
-    0.95
+    "image/png"
   );
 }
 
-export function roundedCorners(
-  image: HTMLImageElement,
-  radius: number
+/* ==========================================
+   ROUNDED CORNERS
+========================================== */
+
+export async function roundedCorners(
+  source: File | Blob,
+  radius = 30
 ): Promise<Blob> {
-  const canvas = createCanvas(
-    image.naturalWidth,
-    image.naturalHeight
-  );
+  const image = await loadImage(source);
 
-  const context = canvas.getContext("2d");
+  const canvas =
+    document.createElement("canvas");
 
-  if (!context) {
-    throw new Error("Canvas is not supported.");
+  canvas.width =
+    image.naturalWidth;
+
+  canvas.height =
+    image.naturalHeight;
+
+  const ctx =
+    canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error(
+      "Canvas is not supported."
+    );
   }
 
   const r = Math.min(
-    radius,
+    Math.max(0, radius),
     canvas.width / 2,
     canvas.height / 2
   );
 
-  context.beginPath();
+  ctx.beginPath();
 
-  context.moveTo(r, 0);
-
-  context.lineTo(
-    canvas.width - r,
-    0
-  );
-
-  context.quadraticCurveTo(
+  ctx.moveTo(r, 0);
+  ctx.lineTo(canvas.width - r, 0);
+  ctx.quadraticCurveTo(
     canvas.width,
     0,
     canvas.width,
     r
   );
 
-  context.lineTo(
+  ctx.lineTo(
     canvas.width,
     canvas.height - r
   );
 
-  context.quadraticCurveTo(
+  ctx.quadraticCurveTo(
     canvas.width,
     canvas.height,
     canvas.width - r,
     canvas.height
   );
 
-  context.lineTo(
-    r,
-    canvas.height
-  );
+  ctx.lineTo(r, canvas.height);
 
-  context.quadraticCurveTo(
+  ctx.quadraticCurveTo(
     0,
     canvas.height,
     0,
     canvas.height - r
   );
 
-  context.lineTo(0, r);
+  ctx.lineTo(0, r);
 
-  context.quadraticCurveTo(
+  ctx.quadraticCurveTo(
     0,
     0,
     r,
     0
   );
 
-  context.closePath();
+  ctx.closePath();
 
-  context.clip();
+  ctx.clip();
 
-  context.drawImage(
+  ctx.drawImage(
     image,
     0,
     0
@@ -551,7 +402,6 @@ export function roundedCorners(
 
   return canvasToBlob(
     canvas,
-    "image/png",
-    0.95
+    "image/png"
   );
 }

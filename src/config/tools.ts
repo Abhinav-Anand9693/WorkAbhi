@@ -1,5 +1,8 @@
 import type { Tool } from "@/types/tool";
 
+/* ==========================================
+   TOOL HELPERS
+========================================== */
 
 function imageTool(
   id: string,
@@ -19,7 +22,8 @@ function imageTool(
     popular,
 
     seo: {
-      title: `${name} - Free Online Image Tool | WorkAbhi`,
+      title:
+        `${name} - Free Online Image Tool | WorkAbhi`,
 
       description:
         `${description} Use WorkAbhi's free online ${name.toLowerCase()} with browser-based image processing.`,
@@ -45,7 +49,8 @@ function imageTool(
 
       faq: [
         {
-          question: `Is ${name} free?`,
+          question:
+            `Is ${name} free?`,
           answer:
             "Yes. WorkAbhi provides this image tool for free.",
         },
@@ -77,46 +82,59 @@ function calculatorTool(
     engine: "calculator",
     available: true,
     popular,
+
     seo: {
       title:
         `${name} - Free Online Calculator | WorkAbhi`,
+
       description:
         `${description} Use WorkAbhi's free online ${name.toLowerCase()}.`,
+
       keywords: [
         name.toLowerCase(),
         "free calculator",
         "online calculator",
-        "WorkAbhi"
+        "WorkAbhi",
       ],
+
       intro:
         `${description} WorkAbhi provides a fast, browser-based calculator with no signup required.`,
+
       howToUse: [
         "Enter the required values.",
         "Review the inputs.",
         "Click Calculate.",
-        "Review your result."
+        "Review your result.",
       ],
+
       faq: [
         {
           question:
             `Is the ${name} free?`,
           answer:
-            "Yes. WorkAbhi provides this calculator for free."
+            "Yes. WorkAbhi provides this calculator for free.",
         },
+
         {
           question:
             `Do I need an account to use the ${name}?`,
           answer:
-            "No. The calculator can be used without creating an account."
-        }
-      ]
-    }
+            "No. The calculator can be used without creating an account.",
+        },
+      ],
+    },
   };
 }
 
-
+/* ==========================================
+   ALL WORKABHI TOOLS
+========================================== */
 
 export const tools: Tool[] = [
+
+  /* ==========================================
+     CALCULATORS
+  ========================================== */
 
   calculatorTool(
     "emi-calculator",
@@ -325,9 +343,13 @@ export const tools: Tool[] = [
     "cgpa-calculator",
     "CGPA Calculator",
     "Calculate CGPA from semester GPAs."
-  )
-,
-   imageTool(
+  ),
+
+  /* ==========================================
+     IMAGE TOOLS — EXACT 40
+  ========================================== */
+
+  imageTool(
     "image-compressor",
     "Image Compressor",
     "Compress images while maintaining good visual quality.",
@@ -342,46 +364,81 @@ export const tools: Tool[] = [
   ),
 
   imageTool(
-    "compress-image-50kb",
+    "resize-image-by-width",
+    "Resize Image by Width",
+    "Resize an image using a custom width."
+  ),
+
+  imageTool(
+    "resize-image-by-height",
+    "Resize Image by Height",
+    "Resize an image using a custom height."
+  ),
+
+  imageTool(
+    "resize-image-by-percentage",
+    "Resize Image by Percentage",
+    "Resize an image by percentage."
+  ),
+
+  imageTool(
+    "compress-image-to-50kb",
     "Compress Image to 50KB",
     "Compress images to approximately 50KB."
   ),
 
   imageTool(
-    "compress-image-100kb",
+    "compress-image-to-100kb",
     "Compress Image to 100KB",
     "Compress images to approximately 100KB."
   ),
 
   imageTool(
-    "compress-image-200kb",
+    "compress-image-to-200kb",
     "Compress Image to 200KB",
     "Compress images to approximately 200KB."
   ),
 
   imageTool(
-    "custom-size-image-compressor",
-    "Custom Size Image Compressor",
-    "Compress images to a custom target size."
+    "compress-image-to-500kb",
+    "Compress Image to 500KB",
+    "Compress images to approximately 500KB."
   ),
 
   imageTool(
-    "batch-image-compressor",
-    "Batch Image Compressor",
-    "Compress multiple images at once.",
-    true
+    "compress-image-to-1mb",
+    "Compress Image to 1MB",
+    "Compress images to approximately 1MB."
   ),
 
   imageTool(
-    "image-quality-reducer",
-    "Image Quality Reducer",
-    "Reduce image quality and file size."
+    "jpg-compressor",
+    "JPG Compressor",
+    "Compress JPG and JPEG images."
+  ),
+
+  imageTool(
+    "png-compressor",
+    "PNG Compressor",
+    "Compress PNG images."
+  ),
+
+  imageTool(
+    "webp-compressor",
+    "WEBP Compressor",
+    "Compress WEBP images."
   ),
 
   imageTool(
     "image-cropper",
     "Image Cropper",
     "Crop images to custom dimensions."
+  ),
+
+  imageTool(
+    "circular-image-cropper",
+    "Circular Image Cropper",
+    "Crop images into circular shapes."
   ),
 
   imageTool(
@@ -397,58 +454,69 @@ export const tools: Tool[] = [
   ),
 
   imageTool(
-    "image-editor",
-    "Image Editor",
-    "Edit images using common adjustments.",
-    true
-  ),
-
-  imageTool(
-    "image-background-color-changer",
-    "Image Background Color Changer",
-    "Change image background colors."
-  ),
-
-  imageTool(
-    "image-brightness-adjuster",
-    "Image Brightness Adjuster",
-    "Adjust image brightness."
-  ),
-
-  imageTool(
-    "image-contrast-adjuster",
-    "Image Contrast Adjuster",
-    "Adjust image contrast."
-  ),
-
-  imageTool(
-    "image-saturation-adjuster",
-    "Image Saturation Adjuster",
-    "Adjust image saturation."
-  ),
-
-  imageTool(
-    "image-blur-tool",
-    "Image Blur Tool",
-    "Apply blur effects to images."
-  ),
-
-  imageTool(
-    "image-sharpen-tool",
-    "Image Sharpen Tool",
+    "image-sharpening",
+    "Image Sharpening",
     "Sharpen images."
   ),
 
   imageTool(
-    "image-watermark",
-    "Image Watermark",
-    "Add watermarks to images."
+    "image-blur",
+    "Image Blur",
+    "Apply blur effects to images."
   ),
 
   imageTool(
-    "image-text-overlay",
-    "Image Text Overlay",
-    "Add custom text over images."
+    "pixelate-image",
+    "Pixelate Image",
+    "Apply a pixelated effect."
+  ),
+
+  imageTool(
+    "grayscale-image",
+    "Grayscale Image",
+    "Convert images to grayscale."
+  ),
+
+  imageTool(
+    "black-and-white-image",
+    "Black & White Image",
+    "Convert images to black and white."
+  ),
+
+  imageTool(
+    "brightness-adjuster",
+    "Brightness Adjuster",
+    "Adjust image brightness."
+  ),
+
+  imageTool(
+    "contrast-adjuster",
+    "Contrast Adjuster",
+    "Adjust image contrast."
+  ),
+
+  imageTool(
+    "saturation-adjuster",
+    "Saturation Adjuster",
+    "Adjust image saturation."
+  ),
+
+  imageTool(
+    "hue-adjuster",
+    "Hue Adjuster",
+    "Adjust image hue."
+  ),
+
+  imageTool(
+    "exposure-adjuster",
+    "Exposure Adjuster",
+    "Adjust image exposure."
+  ),
+
+  imageTool(
+    "opacity-adjuster",
+    "Opacity Adjuster",
+    "Adjust image opacity."
   ),
 
   imageTool(
@@ -458,57 +526,46 @@ export const tools: Tool[] = [
   ),
 
   imageTool(
-    "image-rounded-corners",
-    "Image Rounded Corners",
+    "rounded-corners",
+    "Rounded Corners",
     "Create images with rounded corners."
   ),
 
   imageTool(
-    "image-grayscale",
-    "Image Grayscale",
-    "Convert images to grayscale."
+    "image-watermark",
+    "Image Watermark",
+    "Add watermarks to images."
   ),
 
   imageTool(
-    "image-sepia",
-    "Image Sepia",
-    "Apply a sepia effect."
+    "add-text-to-image",
+    "Add Text to Image",
+    "Add custom text over images."
   ),
 
   imageTool(
-    "image-invert",
-    "Image Invert",
-    "Invert image colors."
+    "image-overlay",
+    "Image Overlay",
+    "Overlay one image on another."
   ),
 
   imageTool(
-    "image-pixelate",
-    "Image Pixelate",
-    "Apply a pixelated effect."
+    "image-collage-maker",
+    "Image Collage Maker",
+    "Create collages from multiple images.",
+    true
   ),
 
   imageTool(
-    "image-metadata-viewer",
-    "Image Metadata Viewer",
-    "View image metadata."
+    "image-splitter",
+    "Image Splitter",
+    "Split an image into multiple sections."
   ),
 
   imageTool(
-    "remove-image-metadata",
-    "Remove Image Metadata",
-    "Remove image metadata."
-  ),
-
-  imageTool(
-    "image-to-base64",
-    "Image to Base64",
-    "Convert images to Base64."
-  ),
-
-  imageTool(
-    "base64-to-image",
-    "Base64 to Image",
-    "Convert Base64 data back to an image."
+    "image-merger",
+    "Image Merger",
+    "Merge multiple images into one image."
   ),
 
   imageTool(
@@ -518,59 +575,32 @@ export const tools: Tool[] = [
   ),
 
   imageTool(
-    "image-palette-generator",
-    "Image Palette Generator",
-    "Generate a color palette from an image."
+    "image-metadata-viewer",
+    "Image Metadata Viewer",
+    "View image metadata."
   ),
 
   imageTool(
-    "image-dimensions-checker",
-    "Image Dimensions Checker",
-    "Check image dimensions."
+    "exif-remover",
+    "EXIF Remover",
+    "Remove image metadata."
   ),
 
   imageTool(
-    "image-dpi-calculator",
-    "Image DPI Calculator",
-    "Calculate image DPI."
+    "image-to-data-url",
+    "Image to Data URL",
+    "Convert images to a Data URL."
   ),
-
-  imageTool(
-    "image-aspect-ratio-calculator",
-    "Image Aspect Ratio Calculator",
-    "Calculate image aspect ratios."
-  ),
-
-  imageTool(
-    "passport-photo-maker",
-    "Passport Photo Maker",
-    "Create passport-style photos."
-  ),
-
-  imageTool(
-    "signature-resizer",
-    "Signature Resizer",
-    "Resize signature images."
-  ),
-
-  imageTool(
-    "profile-picture-maker",
-    "Profile Picture Maker",
-    "Create profile pictures."
-  ),
-
-  imageTool(
-    "meme-generator",
-    "Meme Generator",
-    "Create memes using images and text.",
-    true
-  ),
-
-  imageTool(
-    "collage-maker",
-    "Collage Maker",
-    "Create collages from multiple images.",
-    true
-  )
-
 ];
+
+/* ==========================================
+   TOOL LOOKUP
+========================================== */
+
+export function getToolById(
+  id: string
+): Tool | undefined {
+  return tools.find(
+    (tool) => tool.id === id
+  );
+}

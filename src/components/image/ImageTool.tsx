@@ -1,23 +1,27 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-
-import { imageTools } from "@/config/imageTools";
 import ImageUploader from "./ImageUploader";
 import ImagePreview from "./ImagePreview";
-import ImageControls from "./ImageController";
-
 import {
   compressImage,
   compressToTargetSize,
+  resizeByWidth,
   resizeByHeight,
   resizeByPercentage,
-  resizeByWidth,
 } from "@/engine/image/imageCompressionEngine";
 
+import Image from "next/image";
 import {
-  circularCrop,
+  addBorder,
+  roundedCorners,
+  sharpenCanvas,
+  transformImage,
+} from "@/engine/image/imageTransformEngine";
+
+import {
   cropImage,
+  circularCrop,
   createCollage,
   mergeImages,
   overlayImages,
@@ -30,1607 +34,1774 @@ import {
 } from "@/engine/image/imageExportEngine";
 
 import {
-  addBorder,
-  loadImage,
-  roundedCorners,
-  transformImage,
-} from "@/engine/image/imageTransformEngine";
-
-import {
   getImageMetadata,
   imageToDataURL,
+  pickColor
 } from "@/engine/image/imageUtilityEngine";
 
-interface Props {
+import { imageTools } from "@/config/imageTools";
+import type { ImageToolDefinition } from "@/types/image";
+
+import ImageControls from "./ImageController";
+
+interface ImageToolProps {
   toolId: string;
 }
 
-export default function ImageTool({ toolId }: Props) {
-  const definition = useMemo(
+type OutputFormat =
+  | "image/jpeg"
+  | "image/png"
+  | "image/webp";
+
+interface ProcessingSettings {
+  quality: number;
+
+  width: number;
+  height: number;
+  percentage: number;
+
+  rotate: number;
+  flip: "horizontal" | "vertical";
+
+  effectValue: number;
+
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  hue: number;
+  exposure: number;
+  opacity: number;
+
+  borderSize: number;
+  borderColor: string;
+
+  radius: number;
+
+  text: string;
+  textSize: number;
+  textColor: string;
+
+  watermarkOpacity: number;
+
+  cropX: number;
+  cropY: number;
+  cropWidth: number;
+  cropHeight: number;
+}
+
+const DEFAULT_SETTINGS: ProcessingSettings = {
+  quality: 80,
+
+  width: 1200,
+  height: 800,
+  percentage: 50,
+
+  rotate: 90,
+  flip: "horizontal",
+
+  effectValue: 5,
+
+  brightness: 0,
+  contrast: 0,
+  saturation: 0,
+  hue: 0,
+  exposure: 0,
+  opacity: 100,
+
+  borderSize: 10,
+  borderColor: "#000000",
+
+  radius: 30,
+
+  text: "WorkAbhi",
+  textSize: 48,
+  textColor: "#ffffff",
+
+  watermarkOpacity: 50,
+
+  cropX: 0,
+  cropY: 0,
+  cropWidth: 500,
+  cropHeight: 500,
+};
+
+function formatBytes(bytes: number) {
+  if (!bytes) return "0 B";
+
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.floor(Math.log(bytes) / Math.log(1024));
+
+  return `${(bytes / Math.pow(1024, index)).toFixed(2)} ${
+    units[index]
+  }`;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function getOutputExtension(type: string) {
+  if (type === "image/png") return "png";
+  if (type === "image/webp") return "webp";
+  return "jpg";
+}
+
+function getMimeTypeForTool(toolId: string): OutputFormat {
+  if (toolId === "jpg-compressor") {
+    return "image/jpeg";
+  }
+
+  if (toolId === "png-compressor") {
+    return "image/png";
+  }
+
+  if (toolId === "webp-compressor") {
+    return "image/webp";
+  }
+
+  return "image/jpeg";
+}
+
+function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+   const image =
+  document.createElement("img");
+
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Unable to load image."));
+    };
+
+    image.src = url;
+  });
+}
+
+/**
+ * Generic canvas renderer used by adjustment/effect tools.
+ */
+async function processCanvasImage(
+  file: File,
+  settings: ProcessingSettings,
+  mode:
+    | "brightness"
+    | "contrast"
+    | "saturation"
+    | "hue"
+    | "exposure"
+    | "opacity"
+    | "blur"
+    | "pixelate"
+    | "grayscale"
+    | "black-white"
+): Promise<Blob> {
+  const image = await loadImageFromBlob(file);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+
+  const ctx = canvas.getContext("2d", {
+    willReadFrequently: true,
+  });
+
+  if (!ctx) {
+    throw new Error("Canvas is not supported by this browser.");
+  }
+
+  ctx.drawImage(image, 0, 0);
+
+  const imageData = ctx.getImageData(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  const data = imageData.data;
+
+  if (mode === "blur") {
+    const radius = Math.max(1, settings.effectValue);
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.filter = `blur(${radius}px)`;
+    ctx.drawImage(image, 0, 0);
+    ctx.filter = "none";
+
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error("Unable to create image."));
+          } else {
+            resolve(blob);
+          }
+        },
+        "image/png"
+      );
+    });
+  }
+
+  if (mode === "pixelate") {
+    const size = Math.max(2, settings.effectValue);
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const smallCanvas = document.createElement("canvas");
+
+    const smallWidth = Math.max(
+      1,
+      Math.floor(canvas.width / size)
+    );
+
+    const smallHeight = Math.max(
+      1,
+      Math.floor(canvas.height / size)
+    );
+
+    smallCanvas.width = smallWidth;
+    smallCanvas.height = smallHeight;
+
+    const smallCtx = smallCanvas.getContext("2d");
+
+    if (!smallCtx) {
+      throw new Error("Unable to create pixelation canvas.");
+    }
+
+    smallCtx.drawImage(
+      image,
+      0,
+      0,
+      smallWidth,
+      smallHeight
+    );
+
+    ctx.imageSmoothingEnabled = false;
+
+    ctx.drawImage(
+      smallCanvas,
+      0,
+      0,
+      smallWidth,
+      smallHeight,
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            reject(new Error("Unable to create image."));
+          } else {
+            resolve(blob);
+          }
+        },
+        "image/png"
+      );
+    });
+  }
+
+  for (let i = 0; i < data.length; i += 4) {
+    let r = data[i];
+    let g = data[i + 1];
+    let b = data[i + 2];
+    let a = data[i + 3];
+
+    if (mode === "grayscale") {
+      const gray =
+        0.299 * r +
+        0.587 * g +
+        0.114 * b;
+
+      r = gray;
+      g = gray;
+      b = gray;
+    }
+
+    if (mode === "black-white") {
+      const gray =
+        0.299 * r +
+        0.587 * g +
+        0.114 * b;
+
+      const value = gray > 128 ? 255 : 0;
+
+      r = value;
+      g = value;
+      b = value;
+    }
+
+    if (mode === "brightness") {
+      const amount = settings.brightness * 2.55;
+
+      r += amount;
+      g += amount;
+      b += amount;
+    }
+
+    if (mode === "contrast") {
+      const factor =
+        (259 * (settings.contrast + 255)) /
+        (255 * (259 - settings.contrast));
+
+      r = factor * (r - 128) + 128;
+      g = factor * (g - 128) + 128;
+      b = factor * (b - 128) + 128;
+    }
+
+    if (mode === "saturation") {
+      const amount = settings.saturation / 100;
+
+      const gray =
+        0.299 * r +
+        0.587 * g +
+        0.114 * b;
+
+      r = gray + (r - gray) * (1 + amount);
+      g = gray + (g - gray) * (1 + amount);
+      b = gray + (b - gray) * (1 + amount);
+    }
+
+    if (mode === "hue") {
+      const shift = settings.hue;
+
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+
+      let h = 0;
+      const delta = max - min;
+
+      if (delta !== 0) {
+        if (max === r) {
+          h = 60 * (((g - b) / delta) % 6);
+        } else if (max === g) {
+          h = 60 * ((b - r) / delta + 2);
+        } else {
+          h = 60 * ((r - g) / delta + 4);
+        }
+      }
+
+      if (h < 0) h += 360;
+
+      h = (h + shift + 360) % 360;
+
+      const s =
+        max === 0
+          ? 0
+          : (delta / max) * 255;
+
+      const v = max;
+
+      const c = (s / 255) * (v / 255);
+      const x =
+        c *
+        (1 -
+          Math.abs(((h / 60) % 2) - 1));
+
+      const m = v / 255 - c;
+
+      let rr = 0;
+      let gg = 0;
+      let bb = 0;
+
+      if (h < 60) {
+        rr = c;
+        gg = x;
+      } else if (h < 120) {
+        rr = x;
+        gg = c;
+      } else if (h < 180) {
+        gg = c;
+        bb = x;
+      } else if (h < 240) {
+        gg = x;
+        bb = c;
+      } else if (h < 300) {
+        rr = x;
+        bb = c;
+      } else {
+        rr = c;
+        bb = x;
+      }
+
+      r = (rr + m) * 255;
+      g = (gg + m) * 255;
+      b = (bb + m) * 255;
+    }
+
+    if (mode === "exposure") {
+      const factor =
+        Math.pow(2, settings.exposure / 100);
+
+      r *= factor;
+      g *= factor;
+      b *= factor;
+    }
+
+    if (mode === "opacity") {
+      a =
+        a *
+        (settings.opacity / 100);
+    }
+
+    data[i] = Math.max(0, Math.min(255, r));
+    data[i + 1] = Math.max(
+      0,
+      Math.min(255, g)
+    );
+    data[i + 2] = Math.max(
+      0,
+      Math.min(255, b)
+    );
+    data[i + 3] = Math.max(
+      0,
+      Math.min(255, a)
+    );
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("Unable to create processed image."));
+          return;
+        }
+
+        resolve(blob);
+      },
+      "image/png"
+    );
+  });
+}
+
+/**
+ * Main controller
+ */
+export default function ImageTool({
+  toolId,
+}: ImageToolProps) {
+  const definition = useMemo<ImageToolDefinition | undefined>(
     () =>
       imageTools.find(
         (tool) => tool.toolId === toolId
       ),
     [toolId]
   );
-   
-  const [originalPreview, setOriginalPreview] =
-  useState<string | null>(null);
 
-const [resultPreview, setResultPreview] =
-  useState<string | null>(null);
-
-  
   const [files, setFiles] = useState<File[]>([]);
-  const [preview, setPreview] = useState<string | null>(null);
 
-  const [result, setResult] = useState<Blob | null>(null);
-  const [resultFiles, setResultFiles] = useState<Blob[]>([]);
+  const [originalPreview, setOriginalPreview] =
+    useState<string | null>(null);
 
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [resultPreview, setResultPreview] =
+    useState<string | null>(null);
 
-  const [quality, setQuality] = useState(80);
+  const [result, setResult] =
+    useState<Blob | null>(null);
 
-  const [width, setWidth] = useState("");
-  const [height, setHeight] = useState("");
+  const [resultFiles, setResultFiles] =
+    useState<Blob[]>([]);
 
-  const [percentage, setPercentage] = useState("100");
+  const [settings, setSettings] =
+    useState<ProcessingSettings>(
+      DEFAULT_SETTINGS
+    );
 
-  const [rotation, setRotation] = useState("90");
+  const [loading, setLoading] =
+    useState(false);
 
-  const [flipDirection, setFlipDirection] = useState<
-    "horizontal" | "vertical"
-  >("horizontal");
+  const [error, setError] =
+    useState("");
 
-  const [effectValue, setEffectValue] = useState(10);
+  const [dataUrl, setDataUrl] =
+    useState("");
 
-  const [brightness, setBrightness] = useState(100);
-  const [contrast, setContrast] = useState(100);
-  const [saturation, setSaturation] = useState(100);
-  const [hue, setHue] = useState(0);
-  const [exposure, setExposure] = useState(0);
-  const [opacity, setOpacity] = useState(100);
+  const [metadata, setMetadata] =
+    useState<Record<string, unknown> | null>(
+      null
+    );
 
-  const [borderSize, setBorderSize] = useState(10);
-  const [borderColor, setBorderColor] = useState("#000000");
+  const [pickedColor, setPickedColor] =
+    useState<string | null>(null);
 
-  const [radius, setRadius] = useState(30);
-
-  const [text, setText] = useState("WorkAbhi");
-  const [textSize, setTextSize] = useState(48);
-  const [textColor, setTextColor] = useState("#ffffff");
-
-  const [watermarkOpacity, setWatermarkOpacity] = useState(0.5);
-
-  const [cropX, setCropX] = useState("0");
-  const [cropY, setCropY] = useState("0");
-  const [cropWidth, setCropWidth] = useState("");
-  const [cropHeight, setCropHeight] = useState("");
-
-  const [metadata, setMetadata] = useState<
-    Awaited<ReturnType<typeof getImageMetadata>> | null
-  >(null);
-
-  const [dataURL, setDataURL] = useState("");
-
-  /*
-   * Cleanup the current preview URL when the component unmounts
-   * or when preview changes.
-   */
   useEffect(() => {
     return () => {
-      if (preview) {
-        URL.revokeObjectURL(preview);
+      if (originalPreview) {
+        URL.revokeObjectURL(originalPreview);
+      }
+
+      if (resultPreview) {
+        URL.revokeObjectURL(resultPreview);
       }
     };
-  }, [preview]);
+  }, [originalPreview, resultPreview]);
 
-  /*
-   * If the toolId doesn't exist in imageTools,
-   * don't render the rest of the component.
-   */
   if (!definition) {
     return (
-      <div className="rounded-2xl border p-8">
-        Image tool not found.
+      <div className="rounded-2xl border p-8 text-center">
+        <h2 className="text-xl font-semibold">
+          Image tool not found
+        </h2>
+
+        <p className="mt-2 text-sm text-muted-foreground">
+          The requested image tool does not exist.
+        </p>
       </div>
     );
   }
 
-  function handleFiles(
-  selectedFiles: File[]
-) {
-  if (!selectedFiles.length) {
-    return;
+  function updateSetting<K extends keyof ProcessingSettings>(
+    key: K,
+    value: ProcessingSettings[K]
+  ) {
+    setSettings((current) => ({
+      ...current,
+      [key]: value,
+    }));
   }
 
-  if (originalPreview) {
-    URL.revokeObjectURL(
-      originalPreview
-    );
-  }
+  function handleFiles(selectedFiles: File[]) {
+    if (!selectedFiles.length) return;
 
-  if (resultPreview) {
-    URL.revokeObjectURL(
-      resultPreview
-    );
-  }
+    if (originalPreview) {
+      URL.revokeObjectURL(originalPreview);
+    }
 
-  setFiles(selectedFiles);
+    if (resultPreview) {
+      URL.revokeObjectURL(resultPreview);
+    }
 
-  setResult(null);
-  setResultFiles([]);
-  setMetadata(null);
-  setDataURL("");
-  setError("");
+    setFiles(selectedFiles);
+    setResult(null);
+    setResultFiles([]);
+    setResultPreview(null);
+    setMetadata(null);
+    setDataUrl("");
+    setPickedColor(null);
+    setError("");
 
-  const previewUrl =
-    URL.createObjectURL(
+    const previewUrl = URL.createObjectURL(
       selectedFiles[0]
     );
 
-  setOriginalPreview(
-    previewUrl
-  );
+    setOriginalPreview(previewUrl);
+  }
 
-  setResultPreview(null);
-}
-
-  async function process() {
-    /*
-     * IMPORTANT:
-     *
-     * The outer component has already checked definition,
-     * but process() is a nested function/closure.
-     *
-     * TypeScript does not always preserve that narrowing here.
-     * Therefore we explicitly guard it again.
-     */
-    if (!definition) {
-      setError("Image tool not found.");
-      return;
+  function resetTool() {
+    if (originalPreview) {
+      URL.revokeObjectURL(originalPreview);
     }
 
+    if (resultPreview) {
+      URL.revokeObjectURL(resultPreview);
+    }
+
+    setFiles([]);
+    setResult(null);
+    setResultFiles([]);
+    setOriginalPreview(null);
+    setResultPreview(null);
+    setMetadata(null);
+    setDataUrl("");
+    setPickedColor(null);
+    setError("");
+    setSettings(DEFAULT_SETTINGS);
+  }
+
+  async function processTool() {
     if (!files.length) {
-      setError("Please select an image first.");
+      setError("Please upload an image first.");
       return;
     }
-
-    const currentDefinition = definition;
 
     setLoading(true);
     setError("");
-    setResult(null);
+    setDataUrl("");
+    setMetadata(null);
     setResultFiles([]);
-    setDataURL("");
 
     try {
-      let blob: Blob;
+      const primaryFile = files[0];
 
-      switch (currentDefinition.mode) {
-        /*
-         * ---------------------------------------------------------
-         * COMPRESS
-         * ---------------------------------------------------------
-         */
-        case "compress": {
-          if (currentDefinition.targetKB) {
-            blob = await compressToTargetSize(
-              files[0],
-              currentDefinition.targetKB,
-              currentDefinition.outputFormat ?? "image/jpeg"
-            );
-          } else {
-            blob = await compressImage(files[0], {
-              quality: quality / 100,
-              outputFormat:
-                currentDefinition.outputFormat ?? "image/jpeg",
-            });
+      let output: Blob | null = null;
+      let outputs: Blob[] = [];
+
+      /*
+       * ==========================================
+       * COMPRESSION
+       * ==========================================
+       */
+
+      if (toolId === "image-compressor") {
+        output = await compressImage(
+          primaryFile,
+          {
+            quality: settings.quality / 100,
           }
+        );
+      }
 
-          break;
-        }
+      else if (
+        toolId === "compress-image-to-50kb" ||
+        toolId === "compress-image-to-100kb" ||
+        toolId === "compress-image-to-200kb" ||
+        toolId === "compress-image-to-500kb" ||
+        toolId === "compress-image-to-1mb"
+      ) {
+        const targetMap: Record<string, number> = {
+          "compress-image-to-50kb": 50,
+          "compress-image-to-100kb": 100,
+          "compress-image-to-200kb": 200,
+          "compress-image-to-500kb": 500,
+          "compress-image-to-1mb": 1024,
+        };
 
-        /*
-         * ---------------------------------------------------------
-         * RESIZE
-         * ---------------------------------------------------------
-         */
-        case "resize": {
-          if (toolId === "resize-image-by-width") {
-            const targetWidth = Number(width);
-
-            if (
-              !Number.isFinite(targetWidth) ||
-              targetWidth <= 0
-            ) {
-              throw new Error(
-                "Please enter a valid width."
-              );
-            }
-
-            blob = await resizeByWidth(
-              files[0],
-              targetWidth
-            );
-          } else if (
-            toolId === "resize-image-by-height"
-          ) {
-            const targetHeight = Number(height);
-
-            if (
-              !Number.isFinite(targetHeight) ||
-              targetHeight <= 0
-            ) {
-              throw new Error(
-                "Please enter a valid height."
-              );
-            }
-
-            blob = await resizeByHeight(
-              files[0],
-              targetHeight
-            );
-          } else if (
-            toolId === "resize-image-by-percentage"
-          ) {
-            const value = Number(percentage);
-
-            if (
-              !Number.isFinite(value) ||
-              value <= 0
-            ) {
-              throw new Error(
-                "Please enter a valid percentage."
-              );
-            }
-
-            blob = await resizeByPercentage(
-              files[0],
-              value
-            );
-          } else {
-            /*
-             * General resize:
-             *
-             * Width only:
-             *   calculate height automatically.
-             *
-             * Height only:
-             *   calculate width automatically.
-             *
-             * Both:
-             *   use both values exactly.
-             *
-             * Neither:
-             *   keep original dimensions.
-             */
-            const image = await loadImage(files[0]);
-
-            let targetWidth: number;
-            let targetHeight: number;
-
-            const hasWidth =
-              width.trim() !== "";
-
-            const hasHeight =
-              height.trim() !== "";
-
-            if (hasWidth) {
-              targetWidth = Number(width);
-
-              if (
-                !Number.isFinite(targetWidth) ||
-                targetWidth <= 0
-              ) {
-                throw new Error(
-                  "Please enter a valid width."
-                );
-              }
-
-              if (hasHeight) {
-                targetHeight = Number(height);
-
-                if (
-                  !Number.isFinite(targetHeight) ||
-                  targetHeight <= 0
-                ) {
-                  throw new Error(
-                    "Please enter a valid height."
-                  );
-                }
-              } else {
-                targetHeight = Math.round(
-                  image.naturalHeight *
-                    (targetWidth /
-                      image.naturalWidth)
-                );
-              }
-            } else if (hasHeight) {
-              targetHeight = Number(height);
-
-              if (
-                !Number.isFinite(targetHeight) ||
-                targetHeight <= 0
-              ) {
-                throw new Error(
-                  "Please enter a valid height."
-                );
-              }
-
-              targetWidth = Math.round(
-                image.naturalWidth *
-                  (targetHeight /
-                    image.naturalHeight)
-              );
-            } else {
-              targetWidth = image.naturalWidth;
-              targetHeight = image.naturalHeight;
-            }
-
-            if (
-              targetWidth <= 0 ||
-              targetHeight <= 0
-            ) {
-              throw new Error(
-                "Resize dimensions must be greater than zero."
-              );
-            }
-
-            const canvas =
-              document.createElement("canvas");
-
-            canvas.width = targetWidth;
-            canvas.height = targetHeight;
-
-            const context =
-              canvas.getContext("2d");
-
-            if (!context) {
-              throw new Error(
-                "Canvas is not supported."
-              );
-            }
-
-            context.drawImage(
-              image,
-              0,
-              0,
-              targetWidth,
-              targetHeight
-            );
-
-            blob = await new Promise<Blob>(
-              (resolve, reject) => {
-                canvas.toBlob(
-                  (value) => {
-                    if (!value) {
-                      reject(
-                        new Error(
-                          "Unable to resize image."
-                        )
-                      );
-
-                      return;
-                    }
-
-                    resolve(value);
-                  },
-                  "image/jpeg",
-                  quality / 100
-                );
-              }
-            );
+        output = await compressToTargetSize(
+          primaryFile,
+          {
+            targetKB: targetMap[toolId],
+            outputType: "image/jpeg",
           }
+        );
+      }
 
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * CROP
-         * ---------------------------------------------------------
-         */
-        case "crop": {
-          if (
-            toolId === "circular-image-cropper"
-          ) {
-            blob = await circularCrop(files[0]);
-          } else {
-            const x = Number(cropX);
-            const y = Number(cropY);
-            const cropW = Number(cropWidth);
-            const cropH = Number(cropHeight);
-
-            if (
-              !Number.isFinite(x) ||
-              !Number.isFinite(y)
-            ) {
-              throw new Error(
-                "Please enter valid crop coordinates."
-              );
-            }
-
-            if (
-              !Number.isFinite(cropW) ||
-              cropW <= 0
-            ) {
-              throw new Error(
-                "Please enter a valid crop width."
-              );
-            }
-
-            if (
-              !Number.isFinite(cropH) ||
-              cropH <= 0
-            ) {
-              throw new Error(
-                "Please enter a valid crop height."
-              );
-            }
-
-            if (x < 0 || y < 0) {
-              throw new Error(
-                "Crop X and Y cannot be negative."
-              );
-            }
-
-            blob = await cropImage(files[0], {
-              x,
-              y,
-              width: cropW,
-              height: cropH,
-            });
+      else if (
+        toolId === "jpg-compressor"
+      ) {
+        output = await compressImage(
+          primaryFile,
+          {
+            quality:
+              settings.quality / 100,
+            outputType: "image/jpeg",
           }
+        );
+      }
 
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * TRANSFORM
-         * ---------------------------------------------------------
-         */
-        case "transform": {
-          const image = await loadImage(files[0]);
-
-          const rotationValue =
-            toolId === "image-rotator"
-              ? Number(rotation)
-              : 0;
-
-          if (
-            toolId === "image-rotator" &&
-            ![90, 180, 270].includes(
-              rotationValue
-            )
-          ) {
-            throw new Error(
-              "Please select a valid rotation."
-            );
+      else if (
+        toolId === "png-compressor"
+      ) {
+        output = await compressImage(
+          primaryFile,
+          {
+            quality: 1,
+            outputType: "image/png",
           }
+        );
+      }
 
-          blob = await transformImage(image, {
-            rotation: rotationValue,
-
-            flipHorizontal:
-              toolId === "image-flipper" &&
-              flipDirection === "horizontal",
-
-            flipVertical:
-              toolId === "image-flipper" &&
-              flipDirection === "vertical",
-          });
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * EFFECT
-         * ---------------------------------------------------------
-         */
-        case "effect": {
-          const image = await loadImage(files[0]);
-
-          blob = await transformImage(image, {
-            blur:
-              toolId === "image-blur"
-                ? effectValue
-                : 0,
-
-            sharpen:
-              toolId === "image-sharpening"
-                ? effectValue / 10
-                : 0,
-
-            pixelate:
-              toolId === "pixelate-image"
-                ? Math.max(2, effectValue)
-                : undefined,
-
-            grayscale:
-              toolId === "grayscale-image",
-
-            blackAndWhite:
-              toolId ===
-              "black-and-white-image",
-          });
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * ADJUST
-         * ---------------------------------------------------------
-         */
-        case "adjust": {
-          const image = await loadImage(files[0]);
-
-          blob = await transformImage(
-            image,
-            {
-              brightness:
-                toolId ===
-                "brightness-adjuster"
-                  ? brightness
-                  : 100,
-
-              contrast:
-                toolId === "contrast-adjuster"
-                  ? contrast
-                  : 100,
-
-              saturation:
-                toolId ===
-                "saturation-adjuster"
-                  ? saturation
-                  : 100,
-
-              hue:
-                toolId === "hue-adjuster"
-                  ? hue
-                  : 0,
-
-              exposure:
-                toolId ===
-                "exposure-adjuster"
-                  ? exposure
-                  : 0,
-
-              opacity:
-                toolId ===
-                "opacity-adjuster"
-                  ? opacity
-                  : 100,
-            },
-            toolId === "opacity-adjuster"
-              ? "image/png"
-              : "image/jpeg"
-          );
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * BORDER
-         * ---------------------------------------------------------
-         */
-        case "border": {
-          const image = await loadImage(files[0]);
-
-          if (
-            toolId ===
-            "image-border-generator"
-          ) {
-            if (
-              !Number.isFinite(borderSize) ||
-              borderSize < 0
-            ) {
-              throw new Error(
-                "Please enter a valid border size."
-              );
-            }
-
-            blob = await addBorder(
-              image,
-              {
-                size: borderSize,
-                color: borderColor,
-              }
-            );
-          } else {
-            blob = await roundedCorners(
-              image,
-              radius
-            );
+      else if (
+        toolId === "webp-compressor"
+      ) {
+        output = await compressImage(
+          primaryFile,
+          {
+            quality:
+              settings.quality / 100,
+            outputType: "image/webp",
           }
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * WATERMARK
-         * ---------------------------------------------------------
-         */
-        case "watermark": {
-          if (!text.trim()) {
-            throw new Error(
-              "Please enter watermark text."
-            );
-          }
-
-          blob = await addWatermark(
-            files[0],
-            {
-              text,
-              opacity: watermarkOpacity,
-              fontSize: textSize,
-              color: textColor,
-              position: "bottom-right",
-            }
-          );
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * TEXT
-         * ---------------------------------------------------------
-         */
-        case "text": {
-          if (!text.trim()) {
-            throw new Error(
-              "Please enter text."
-            );
-          }
-
-          blob = await addTextToImage(
-            files[0],
-            {
-              text,
-              fontSize: textSize,
-              color: textColor,
-              x: 30,
-              y: 30,
-              bold: true,
-            }
-          );
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * OVERLAY
-         * ---------------------------------------------------------
-         */
-        case "overlay": {
-          if (files.length < 2) {
-            throw new Error(
-              "Select two images."
-            );
-          }
-
-          blob = await overlayImages(
-            files[0],
-            files[1]
-          );
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * COLLAGE
-         * ---------------------------------------------------------
-         */
-        case "collage": {
-          if (files.length < 2) {
-            throw new Error(
-              "Select at least two images."
-            );
-          }
-
-          blob = await createCollage(files);
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * SPLIT
-         * ---------------------------------------------------------
-         */
-        case "split": {
-          const pieces = await splitImage(
-            files[0]
-          );
-
-          if (!pieces.length) {
-            throw new Error(
-              "Unable to split image."
-            );
-          }
-
-          setResultFiles(pieces);
-          setResult(pieces[0]);
-
-          const splitPreviewURL =
-            URL.createObjectURL(pieces[0]);
-
-          setPreview(splitPreviewURL);
-
-          return;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * MERGE
-         * ---------------------------------------------------------
-         */
-        case "merge": {
-          if (files.length < 2) {
-            throw new Error(
-              "Select at least two images."
-            );
-          }
-
-          blob = await mergeImages(files);
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * METADATA / EXIF
-         * ---------------------------------------------------------
-         */
-        case "metadata": {
-          const info =
-            await getImageMetadata(files[0]);
-
-          setMetadata(info);
-
-          /*
-           * Normal metadata viewer only displays information.
-           * It doesn't create a result image.
-           */
-          if (toolId !== "exif-remover") {
-            return;
-          }
-
-          const image =
-            await loadImage(files[0]);
-
-          const canvas =
-            document.createElement("canvas");
-
-          canvas.width =
-            image.naturalWidth;
-
-          canvas.height =
-            image.naturalHeight;
-
-          const context =
-            canvas.getContext("2d");
-
-          if (!context) {
-            throw new Error(
-              "Canvas is not supported."
-            );
-          }
-
-          context.drawImage(
-            image,
-            0,
-            0
-          );
-
-          blob = await new Promise<Blob>(
-            (resolve, reject) => {
-              canvas.toBlob(
-                (value) => {
-                  if (!value) {
-                    reject(
-                      new Error(
-                        "Unable to remove metadata."
-                      )
-                    );
-
-                    return;
-                  }
-
-                  resolve(value);
-                },
-                "image/png"
-              );
-            }
-          );
-
-          break;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * DATA URL
-         * ---------------------------------------------------------
-         */
-        case "data-url": {
-          const value =
-            await imageToDataURL(files[0]);
-
-          setDataURL(value);
-
-          return;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * UNKNOWN MODE
-         * ---------------------------------------------------------
-         */
-        default:
-          throw new Error(
-            "This image operation is not supported."
-          );
+        );
       }
 
       /*
-       * Store normal processing result.
+       * ==========================================
+       * RESIZE
+       * ==========================================
        */
-      setResult(blob);
+
+      else if (
+        toolId === "image-resizer"
+      ) {
+        output = await compressImage(
+          primaryFile,
+          {
+            quality: 0.9,
+            maxWidth: settings.width,
+            maxHeight: settings.height,
+          }
+        );
+      }
+
+      else if (
+        toolId === "resize-image-by-width"
+      ) {
+        output = await resizeByWidth(
+          primaryFile,
+          settings.width
+        );
+      }
+
+      else if (
+        toolId === "resize-image-by-height"
+      ) {
+        output = await resizeByHeight(
+          primaryFile,
+          settings.height
+        );
+      }
+
+      else if (
+        toolId ===
+        "resize-image-by-percentage"
+      ) {
+        output = await resizeByPercentage(
+          primaryFile,
+          settings.percentage
+        );
+      }
 
       /*
-       * Create preview for the processed image.
+       * ==========================================
+       * CROP
+       * ==========================================
        */
-      const resultPreviewURL =
-        URL.createObjectURL(blob);
 
-      setPreview(resultPreviewURL);
-    } catch (caught) {
+      else if (
+        toolId === "image-cropper"
+      ) {
+        output = await cropImage(
+          primaryFile,
+          {
+            x: settings.cropX,
+            y: settings.cropY,
+            width: settings.cropWidth,
+            height: settings.cropHeight,
+          }
+        );
+      }
+
+      else if (
+        toolId ===
+        "circular-image-cropper"
+      ) {
+        output = await circularCrop(
+          primaryFile
+        );
+      }
+
+      /*
+       * ==========================================
+       * ROTATE / FLIP
+       * ==========================================
+       */
+
+      else if (
+        toolId === "image-rotator"
+      ) {
+        output = await transformImage(
+          primaryFile,
+          {
+            rotate: settings.rotate,
+          }
+        );
+      }
+
+      else if (
+        toolId === "image-flipper"
+      ) {
+        output = await transformImage(
+          primaryFile,
+          {
+            flip: settings.flip,
+          }
+        );
+      }
+
+      /*
+       * ==========================================
+       * EFFECTS
+       * ==========================================
+       */
+
+      else if (
+        toolId === "image-sharpening"
+      ) {
+        output = await sharpenCanvas(
+          primaryFile,
+          settings.effectValue
+        );
+      }
+
+      else if (
+        toolId === "image-blur"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "blur"
+        );
+      }
+
+      else if (
+        toolId === "pixelate-image"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "pixelate"
+        );
+      }
+
+      else if (
+        toolId === "grayscale-image"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "grayscale"
+        );
+      }
+
+      else if (
+        toolId === "black-and-white-image"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "black-white"
+        );
+      }
+
+      /*
+       * ==========================================
+       * ADJUSTMENTS
+       * ==========================================
+       */
+
+      else if (
+        toolId === "brightness-adjuster"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "brightness"
+        );
+      }
+
+      else if (
+        toolId === "contrast-adjuster"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "contrast"
+        );
+      }
+
+      else if (
+        toolId === "saturation-adjuster"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "saturation"
+        );
+      }
+
+      else if (
+        toolId === "hue-adjuster"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "hue"
+        );
+      }
+
+      else if (
+        toolId === "exposure-adjuster"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "exposure"
+        );
+      }
+
+      else if (
+        toolId === "opacity-adjuster"
+      ) {
+        output = await processCanvasImage(
+          primaryFile,
+          settings,
+          "opacity"
+        );
+      }
+
+      /*
+       * ==========================================
+       * BORDER / ROUNDED
+       * ==========================================
+       */
+
+      else if (
+        toolId ===
+        "image-border-generator"
+      ) {
+        output = await addBorder(
+          primaryFile,
+          settings.borderSize,
+          settings.borderColor
+        );
+      }
+
+      else if (
+        toolId === "rounded-corners"
+      ) {
+        output = await roundedCorners(
+          primaryFile,
+          settings.radius
+        );
+      }
+
+      /*
+       * ==========================================
+       * TEXT / WATERMARK
+       * ==========================================
+       */
+
+      else if (
+        toolId === "add-text-to-image"
+      ) {
+        output = await addTextToImage(
+          primaryFile,
+          {
+            text: settings.text,
+            fontSize: settings.textSize,
+            color: settings.textColor,
+          }
+        );
+      }
+
+      else if (
+        toolId === "image-watermark"
+      ) {
+        output = await addWatermark(
+          primaryFile,
+          {
+            text: settings.text,
+            opacity:
+              settings.watermarkOpacity / 100,
+          }
+        );
+      }
+
+      /*
+       * ==========================================
+       * OVERLAY
+       * ==========================================
+       */
+
+      else if (
+        toolId === "image-overlay"
+      ) {
+        if (files.length < 2) {
+          throw new Error(
+            "Please upload at least two images for overlay."
+          );
+        }
+
+        output = await overlayImages(
+          files[0],
+          files[1]
+        );
+      }
+
+      /*
+       * ==========================================
+       * COLLAGE
+       * ==========================================
+       */
+
+      else if (
+        toolId ===
+        "image-collage-maker"
+      ) {
+        if (files.length < 2) {
+          throw new Error(
+            "Please upload at least two images for a collage."
+          );
+        }
+
+        output = await createCollage(
+          files
+        );
+      }
+
+      /*
+       * ==========================================
+       * MERGE
+       * ==========================================
+       */
+
+      else if (
+        toolId === "image-merger"
+      ) {
+        if (files.length < 2) {
+          throw new Error(
+            "Please upload at least two images to merge."
+          );
+        }
+
+        output = await mergeImages(
+          files
+        );
+      }
+
+      /*
+       * ==========================================
+       * SPLIT
+       * ==========================================
+       */
+
+      else if (
+        toolId === "image-splitter"
+      ) {
+        outputs = await splitImage(
+          primaryFile
+        );
+
+        if (!outputs.length) {
+          throw new Error(
+            "Unable to split the image."
+          );
+        }
+
+        output = outputs[0];
+      }
+
+      /*
+       * ==========================================
+       * METADATA
+       * ==========================================
+       */
+
+      else if (
+        toolId ===
+        "image-metadata-viewer"
+      ) {
+        const info =
+          await getImageMetadata(
+            primaryFile
+          );
+
+        setMetadata(
+          info as Record<string, unknown>
+        );
+
+        setLoading(false);
+        return;
+      }
+
+      /*
+       * ==========================================
+       * EXIF REMOVER
+       * ==========================================
+       */
+
+      else if (
+        toolId === "exif-remover"
+      ) {
+        /*
+         * Re-rendering through Canvas strips
+         * embedded image metadata.
+         */
+        output = await compressImage(
+          primaryFile,
+          {
+            quality: 1,
+            outputType: "image/png",
+          }
+        );
+      }
+
+      /*
+       * ==========================================
+       * DATA URL
+       * ==========================================
+       */
+
+      else if (
+        toolId === "image-to-data-url"
+      ) {
+        const url =
+          await imageToDataURL(
+            primaryFile
+          );
+
+        setDataUrl(url);
+        setLoading(false);
+        return;
+      }
+
+      /*
+       * ==========================================
+       * COLOR PICKER
+       * ==========================================
+       */
+
+      else if (
+        toolId === "image-color-picker"
+      ) {
+        /*
+         * Color picker is handled from
+         * the preview click interaction.
+         */
+        setError(
+          "Click on the image preview to pick a color."
+        );
+
+        setLoading(false);
+        return;
+      }
+
+      else {
+        throw new Error(
+          `Processing is not implemented for ${toolId}.`
+        );
+      }
+
+      if (!output) {
+        throw new Error(
+          "No result was generated."
+        );
+      }
+
+      setResult(output);
+      setResultFiles(
+        outputs.length ? outputs : [output]
+      );
+
+      if (resultPreview) {
+        URL.revokeObjectURL(
+          resultPreview
+        );
+      }
+
+      const previewUrl =
+        URL.createObjectURL(output);
+
+      setResultPreview(
+        previewUrl
+      );
+    } catch (err) {
+      console.error(err);
+
       setError(
-        caught instanceof Error
-          ? caught.message
-          : "Image processing failed."
+        err instanceof Error
+          ? err.message
+          : "Something went wrong while processing the image."
       );
     } finally {
       setLoading(false);
     }
   }
 
-  function downloadBlob(
-    blob: Blob,
-    name: string
-  ) {
-    const url =
-      URL.createObjectURL(blob);
-
-    const anchor =
-      document.createElement("a");
-
-    anchor.href = url;
-    anchor.download = name;
-
-    document.body.appendChild(anchor);
-
-    anchor.click();
-
-    anchor.remove();
-
-    URL.revokeObjectURL(url);
-  }
-
   function downloadResult() {
-    if (!result) {
-      return;
-    }
+    if (!result) return;
+
+    const extension =
+      getOutputExtension(
+        result.type
+      );
 
     downloadBlob(
       result,
-      `${toolId}-workabhi.png`
+      `workabhi-${toolId}.${extension}`
     );
   }
 
-  function downloadSplit(
-    blob: Blob,
-    index: number
-  ) {
-    downloadBlob(
-      blob,
-      `${toolId}-${index + 1}.png`
+  function downloadAllResults() {
+    resultFiles.forEach(
+      (blob, index) => {
+        const extension =
+          getOutputExtension(
+            blob.type
+          );
+
+        downloadBlob(
+          blob,
+          `workabhi-${toolId}-${index + 1}.${extension}`
+        );
+      }
     );
   }
+
+async function handlePreviewClick(
+  event: React.MouseEvent<HTMLImageElement>
+) {
+  if (
+    toolId !== "image-color-picker" ||
+    !files[0]
+  ) {
+    return;
+  }
+
+  try {
+    const image = event.currentTarget;
+    const rect =
+      image.getBoundingClientRect();
+
+    const x =
+      ((event.clientX - rect.left) /
+        rect.width) *
+      image.naturalWidth;
+
+    const y =
+      ((event.clientY - rect.top) /
+        rect.height) *
+      image.naturalHeight;
+
+    const color =
+      await pickColor(
+        files[0],
+        x,
+        y
+      );
+
+    setPickedColor(color.hex);
+    setError("");
+  } catch (err) {
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Unable to pick color."
+    );
+  }
+}
+
+  const isMultiple =
+    definition.multiple ||
+    toolId === "image-overlay" ||
+    toolId === "image-collage-maker" ||
+    toolId === "image-merger";
+
+  const needsQuality =
+    toolId === "image-compressor" ||
+    toolId === "jpg-compressor" ||
+    toolId === "webp-compressor";
+
+  const needsWidth =
+    toolId === "image-resizer" ||
+    toolId === "resize-image-by-width";
+
+  const needsHeight =
+    toolId === "image-resizer" ||
+    toolId === "resize-image-by-height";
+
+  const needsPercentage =
+    toolId ===
+    "resize-image-by-percentage";
+
+  const needsEffect =
+    toolId === "image-sharpening" ||
+    toolId === "image-blur" ||
+    toolId === "pixelate-image";
+
+  const needsAdjustment =
+    toolId === "brightness-adjuster" ||
+    toolId === "contrast-adjuster" ||
+    toolId === "saturation-adjuster" ||
+    toolId === "hue-adjuster" ||
+    toolId === "exposure-adjuster" ||
+    toolId === "opacity-adjuster";
 
   return (
     <div className="space-y-6">
-      {/* -------------------------------------------------------
-          Upload
-      -------------------------------------------------------- */}
-        <ImageUploader
-  multiple={definition.multiple}
-  onFilesSelected={handleFiles}
-  disabled={loading}
-/>
+      {/* =====================================
+          UPLOADER
+      ====================================== */}
 
-      {/* -------------------------------------------------------
-          File Info
-      -------------------------------------------------------- */}
+      <ImageUploader
+        multiple={isMultiple}
+        disabled={loading}
+        onFilesSelected={handleFiles}
+      />
 
-      {files.length > 0 && (
-        <section className="rounded-2xl border p-6">
-          <div className="flex flex-wrap gap-2">
-            {files.map(
-              (file, index) => (
-                <div
-                  key={`${file.name}-${index}`}
-                  className="rounded-lg bg-muted px-3 py-2 text-sm"
-                >
-                  {file.name}
-                </div>
-              )
-            )}
-          </div>
-        </section>
-      )}
-
-      {/* -------------------------------------------------------
-          Controls
-      -------------------------------------------------------- */}
+      {/* =====================================
+          FILE INFO
+      ====================================== */}
 
       {files.length > 0 && (
-        <section className="rounded-2xl border p-6">
-          <h2 className="mb-5 text-lg font-semibold">
-            Tool Settings
-          </h2>
+        <div className="rounded-2xl border bg-background p-5">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <p className="font-medium">
+                {files.length === 1
+                  ? files[0].name
+                  : `${files.length} images selected`}
+              </p>
 
-          <div className="space-y-5">
-            {/* Compression */}
-
-            {definition.mode ===
-              "compress" && (
-              <Range
-                label="Quality"
-                value={quality}
-                min={10}
-                max={100}
-                onChange={setQuality}
-              />
-            )}
-
-            {/* Resize */}
-
-            {definition.mode ===
-              "resize" && (
-              <>
-                {toolId !==
-                  "resize-image-by-percentage" && (
-                  <>
-                    <NumberInput
-                      label="Width"
-                      value={width}
-                      onChange={setWidth}
-                    />
-
-                    <NumberInput
-                      label="Height"
-                      value={height}
-                      onChange={setHeight}
-                    />
-                  </>
-                )}
-
-                {toolId ===
-                  "resize-image-by-percentage" && (
-                  <NumberInput
-                    label="Percentage"
-                    value={percentage}
-                    onChange={setPercentage}
-                  />
-                )}
-              </>
-            )}
-
-            {/* Crop */}
-
-            {definition.mode ===
-              "crop" &&
-              toolId !==
-                "circular-image-cropper" && (
-                <>
-                  <NumberInput
-                    label="X"
-                    value={cropX}
-                    onChange={setCropX}
-                  />
-
-                  <NumberInput
-                    label="Y"
-                    value={cropY}
-                    onChange={setCropY}
-                  />
-
-                  <NumberInput
-                    label="Crop Width"
-                    value={cropWidth}
-                    onChange={setCropWidth}
-                  />
-
-                  <NumberInput
-                    label="Crop Height"
-                    value={cropHeight}
-                    onChange={setCropHeight}
-                  />
-                </>
-              )}
-
-            {/* Rotation */}
-
-            {toolId ===
-              "image-rotator" && (
-              <div>
-                <label className="text-sm font-medium">
-                  Rotation
-                </label>
-
-                <select
-                  value={rotation}
-                  onChange={(event) =>
-                    setRotation(
-                      event.target.value
+              <p className="mt-1 text-sm text-muted-foreground">
+                {files.length === 1
+                  ? formatBytes(
+                      files[0].size
                     )
-                  }
-                  className="mt-2 w-full rounded-lg border px-3 py-2"
-                >
-                  <option value="90">
-                    90°
-                  </option>
-
-                  <option value="180">
-                    180°
-                  </option>
-
-                  <option value="270">
-                    270°
-                  </option>
-                </select>
-              </div>
-            )}
-
-            {/* Flip */}
-
-            {toolId ===
-              "image-flipper" && (
-              <div>
-                <label className="text-sm font-medium">
-                  Flip Direction
-                </label>
-
-                <select
-                  value={flipDirection}
-                  onChange={(event) =>
-                    setFlipDirection(
-                      event.target.value as
-                        | "horizontal"
-                        | "vertical"
-                    )
-                  }
-                  className="mt-2 w-full rounded-lg border px-3 py-2"
-                >
-                  <option value="horizontal">
-                    Horizontal
-                  </option>
-
-                  <option value="vertical">
-                    Vertical
-                  </option>
-                </select>
-              </div>
-            )}
-
-            {/* Effects */}
-
-            {definition.mode ===
-              "effect" && (
-              <Range
-                label="Effect Strength"
-                value={effectValue}
-                min={2}
-                max={30}
-                onChange={setEffectValue}
-              />
-            )}
-
-            {/* Brightness */}
-
-            {toolId ===
-              "brightness-adjuster" && (
-              <Range
-                label="Brightness"
-                value={brightness}
-                min={0}
-                max={200}
-                onChange={setBrightness}
-              />
-            )}
-
-            {/* Contrast */}
-
-            {toolId ===
-              "contrast-adjuster" && (
-              <Range
-                label="Contrast"
-                value={contrast}
-                min={0}
-                max={200}
-                onChange={setContrast}
-              />
-            )}
-
-            {/* Saturation */}
-
-            {toolId ===
-              "saturation-adjuster" && (
-              <Range
-                label="Saturation"
-                value={saturation}
-                min={0}
-                max={200}
-                onChange={setSaturation}
-              />
-            )}
-
-            {/* Hue */}
-
-            {toolId ===
-              "hue-adjuster" && (
-              <Range
-                label="Hue"
-                value={hue}
-                min={-180}
-                max={180}
-                onChange={setHue}
-              />
-            )}
-
-            {/* Exposure */}
-
-            {toolId ===
-              "exposure-adjuster" && (
-              <Range
-                label="Exposure"
-                value={exposure}
-                min={-3}
-                max={3}
-                onChange={setExposure}
-              />
-            )}
-
-            {/* Opacity */}
-
-            {toolId ===
-              "opacity-adjuster" && (
-              <Range
-                label="Opacity"
-                value={opacity}
-                min={0}
-                max={100}
-                onChange={setOpacity}
-              />
-            )}
-
-            {/* Border */}
-
-            {toolId ===
-              "image-border-generator" && (
-              <>
-                <NumberInput
-                  label="Border Size"
-                  value={String(borderSize)}
-                  onChange={(value) =>
-                    setBorderSize(
-                      Number(value)
-                    )
-                  }
-                />
-
-                <div>
-                  <label className="text-sm font-medium">
-                    Border Color
-                  </label>
-
-                  <input
-                    type="color"
-                    value={borderColor}
-                    onChange={(event) =>
-                      setBorderColor(
-                        event.target.value
+                  : files
+                      .map(
+                        (file) =>
+                          formatBytes(
+                            file.size
+                          )
                       )
-                    }
-                    className="mt-2 h-10 w-full"
-                  />
-                </div>
-              </>
-            )}
-
-            {/* Rounded corners */}
-
-            {toolId ===
-              "rounded-corners" && (
-              <Range
-                label="Corner Radius"
-                value={radius}
-                min={0}
-                max={300}
-                onChange={setRadius}
-              />
-            )}
-
-            {/* Text / Watermark */}
-
-            {(toolId ===
-              "image-watermark" ||
-              toolId ===
-                "add-text-to-image") && (
-              <>
-                <TextInput
-                  label="Text"
-                  value={text}
-                  onChange={setText}
-                />
-
-                <NumberInput
-                  label="Font Size"
-                  value={String(textSize)}
-                  onChange={(value) =>
-                    setTextSize(
-                      Number(value)
-                    )
-                  }
-                />
-
-                <div>
-                  <label className="text-sm font-medium">
-                    Text Color
-                  </label>
-
-                  <input
-                    type="color"
-                    value={textColor}
-                    onChange={(event) =>
-                      setTextColor(
-                        event.target.value
-                      )
-                    }
-                    className="mt-2 h-10 w-full"
-                  />
-                </div>
-              </>
-            )}
-
-            {/* Watermark opacity */}
-
-            {toolId ===
-              "image-watermark" && (
-              <Range
-                label="Watermark Opacity"
-                value={Math.round(
-                  watermarkOpacity * 100
-                )}
-                min={10}
-                max={100}
-                onChange={(value) =>
-                  setWatermarkOpacity(
-                    value / 100
-                  )
-                }
-              />
-            )}
-          </div>
-
-          {/* Error */}
-
-          {error && (
-            <div className="mt-5 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-600">
-              {error}
+                      .join(" • ")}
+              </p>
             </div>
-          )}
 
-          {/* Process */}
-
-          <button
-            type="button"
-            onClick={process}
-            disabled={loading}
-            className="mt-6 w-full rounded-xl bg-black px-6 py-3 font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading
-              ? "Processing..."
-              : "Process Image"}
-          </button>
-        </section>
-      )}
-
-      {/* -------------------------------------------------------
-          Metadata
-      -------------------------------------------------------- */}
-
-      {metadata && (
-        <section className="rounded-2xl border p-6">
-          <h2 className="mb-4 text-lg font-semibold">
-            Image Metadata
-          </h2>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Info
-              label="File Name"
-              value={metadata.name}
-            />
-
-            <Info
-              label="Type"
-              value={metadata.type}
-            />
-
-            <Info
-              label="Size"
-              value={`${metadata.sizeKB} KB`}
-            />
-
-            <Info
-              label="Dimensions"
-              value={`${metadata.width} × ${metadata.height}`}
-            />
-
-            <Info
-              label="Aspect Ratio"
-              value={metadata.aspectRatio}
-            />
-
-            <Info
-              label="Modified"
-              value={metadata.lastModified}
-            />
+            <button
+              type="button"
+              onClick={resetTool}
+              disabled={loading}
+              className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+            >
+              Change Image
+            </button>
           </div>
-        </section>
+        </div>
       )}
 
-      {/* -------------------------------------------------------
-          Data URL
-      -------------------------------------------------------- */}
+      {/* =====================================
+          CONTROLS
+      ====================================== */}
 
-      {dataURL && (
-        <section className="rounded-2xl border p-6">
-          <h2 className="mb-4 text-lg font-semibold">
-            Data URL
-          </h2>
+     <ImageControls
+  definition={definition}
+
+  quality={settings.quality}
+  setQuality={(value: number) =>
+    updateSetting("quality", value)
+  }
+
+  width={settings.width}
+  setWidth={(value: number) =>
+    updateSetting("width", value)
+  }
+
+  height={settings.height}
+  setHeight={(value: number) =>
+    updateSetting("height", value)
+  }
+
+  percentage={settings.percentage}
+  setPercentage={(value: number) =>
+    updateSetting("percentage", value)
+  }
+
+  rotate={settings.rotate}
+  setRotate={(value: number) =>
+    updateSetting("rotate", value)
+  }
+
+  flip={settings.flip}
+  setFlip={(
+    value: "horizontal" | "vertical"
+  ) => updateSetting("flip", value)}
+
+  effectValue={settings.effectValue}
+  setEffectValue={(value: number) =>
+    updateSetting(
+      "effectValue",
+      value
+    )
+  }
+
+  brightness={settings.brightness}
+  setBrightness={(value: number) =>
+    updateSetting(
+      "brightness",
+      value
+    )
+  }
+
+  contrast={settings.contrast}
+  setContrast={(value: number) =>
+    updateSetting(
+      "contrast",
+      value
+    )
+  }
+
+  saturation={settings.saturation}
+  setSaturation={(value: number) =>
+    updateSetting(
+      "saturation",
+      value
+    )
+  }
+
+  hue={settings.hue}
+  setHue={(value: number) =>
+    updateSetting("hue", value)
+  }
+
+  exposure={settings.exposure}
+  setExposure={(value: number) =>
+    updateSetting(
+      "exposure",
+      value
+    )
+  }
+
+  opacity={settings.opacity}
+  setOpacity={(value: number) =>
+    updateSetting(
+      "opacity",
+      value
+    )
+  }
+
+  borderSize={settings.borderSize}
+  setBorderSize={(value: number) =>
+    updateSetting(
+      "borderSize",
+      value
+    )
+  }
+
+  borderColor={settings.borderColor}
+  setBorderColor={(value: string) =>
+    updateSetting(
+      "borderColor",
+      value
+    )
+  }
+
+  radius={settings.radius}
+  setRadius={(value: number) =>
+    updateSetting("radius", value)
+  }
+
+  text={settings.text}
+  setText={(value: string) =>
+    updateSetting("text", value)
+  }
+
+  textSize={settings.textSize}
+  setTextSize={(value: number) =>
+    updateSetting(
+      "textSize",
+      value
+    )
+  }
+
+  textColor={settings.textColor}
+  setTextColor={(value: string) =>
+    updateSetting(
+      "textColor",
+      value
+    )
+  }
+
+  watermarkOpacity={
+    settings.watermarkOpacity
+  }
+  setWatermarkOpacity={(value: number) =>
+    updateSetting(
+      "watermarkOpacity",
+      value
+    )
+  }
+
+  cropX={settings.cropX}
+  setCropX={(value: number) =>
+    updateSetting("cropX", value)
+  }
+
+  cropY={settings.cropY}
+  setCropY={(value: number) =>
+    updateSetting("cropY", value)
+  }
+
+  cropWidth={settings.cropWidth}
+  setCropWidth={(value: number) =>
+    updateSetting(
+      "cropWidth",
+      value
+    )
+  }
+
+  cropHeight={settings.cropHeight}
+  setCropHeight={(value: number) =>
+    updateSetting(
+      "cropHeight",
+      value
+    )
+  }
+
+  onProcess={processTool}
+  loading={loading}
+/>
+      {/* =====================================
+          ERROR
+      ====================================== */}
+
+      {error && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+
+      {/* =====================================
+          COLOR PICKER RESULT
+      ====================================== */}
+
+      {toolId ===
+        "image-color-picker" &&
+        originalPreview && (
+          <div className="rounded-2xl border bg-background p-6">
+            <p className="mb-3 text-sm font-medium">
+              Click anywhere on the image
+              to pick a color.
+            </p>
+
+            <Image
+              src={originalPreview}
+              alt="Color picker"
+              onClick={
+                handlePreviewClick
+              }
+              className="max-h-[600px] w-full cursor-crosshair rounded-xl object-contain"
+            />
+
+            {pickedColor && (
+              <div className="mt-5 flex items-center gap-4">
+                <div
+                  className="h-12 w-12 rounded-lg border"
+                  style={{
+                    backgroundColor:
+                      pickedColor,
+                  }}
+                />
+
+                <div>
+                  <p className="text-sm text-muted-foreground">
+                    Selected color
+                  </p>
+
+                  <p className="font-mono font-semibold">
+                    {pickedColor}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+      {/* =====================================
+          DATA URL
+      ====================================== */}
+
+      {dataUrl && (
+        <div className="rounded-2xl border bg-background p-6">
+          <h3 className="font-semibold">
+            Image Data URL
+          </h3>
 
           <textarea
+            value={dataUrl}
             readOnly
-            value={dataURL}
-            className="min-h-56 w-full rounded-xl border p-3 font-mono text-xs"
+            className="mt-4 min-h-[220px] w-full rounded-xl border bg-muted/30 p-4 font-mono text-xs"
           />
 
           <button
             type="button"
             onClick={() =>
               navigator.clipboard.writeText(
-                dataURL
+                dataUrl
               )
             }
-            className="mt-4 rounded-lg border px-4 py-2 text-sm font-medium"
+            className="mt-4 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
           >
             Copy Data URL
           </button>
-        </section>
+        </div>
       )}
 
-      {/* -------------------------------------------------------
-          Preview
-      -------------------------------------------------------- */}
+      {/* =====================================
+          METADATA
+      ====================================== */}
 
-      {preview && (
-        <section className="rounded-2xl border p-6">
-          <h2 className="mb-4 text-lg font-semibold">
-            Preview
-          </h2>
+      {metadata && (
+        <div className="rounded-2xl border bg-background p-6">
+          <h3 className="font-semibold">
+            Image Metadata
+          </h3>
 
-          <div className="flex min-h-64 items-center justify-center overflow-hidden rounded-xl bg-muted/30 p-4">
-            <img
-              src={preview}
-              alt={`${definition.title} preview`}
-              className="max-h-[600px] max-w-full object-contain"
-            />
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-sm">
+              <tbody>
+                {Object.entries(
+                  metadata
+                ).map(
+                  ([key, value]) => (
+                    <tr
+                      key={key}
+                      className="border-b last:border-0"
+                    >
+                      <td className="px-3 py-3 font-medium">
+                        {key}
+                      </td>
+
+                      <td className="px-3 py-3 text-muted-foreground">
+                        {String(
+                          value
+                        )}
+                      </td>
+                    </tr>
+                  )
+                )}
+              </tbody>
+            </table>
           </div>
+        </div>
+      )}
 
-          {/* Normal result */}
+      {/* =====================================
+          PREVIEW
+      ====================================== */}
 
-          {result && (
-            <button
-              type="button"
-              onClick={downloadResult}
-              className="mt-5 w-full rounded-xl bg-black px-6 py-3 font-medium text-white"
-            >
-              Download Result
-            </button>
-          )}
+     {toolId === "image-color-picker" &&
+  originalPreview && (
+    <div className="rounded-2xl border bg-background p-5">
+      <h3 className="font-semibold">
+        Pick a color
+      </h3>
 
-          {/* Split results */}
+      <p className="mt-1 text-sm text-muted-foreground">
+        Click anywhere on the image.
+      </p>
 
-          {resultFiles.length > 0 && (
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+      <Image
+        src={originalPreview}
+        alt="Color picker"
+        onClick={handlePreviewClick}
+        className="mt-5 max-h-[650px] w-full cursor-crosshair rounded-xl object-contain"
+      />
+
+      {pickedColor && (
+        <div className="mt-5 flex items-center gap-4">
+          <div
+            className="h-14 w-14 rounded-xl border"
+            style={{
+              backgroundColor:
+                pickedColor,
+            }}
+          />
+
+          <div>
+            <p className="text-xs text-muted-foreground">
+              HEX
+            </p>
+
+            <p className="font-mono text-lg font-semibold">
+              {pickedColor}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  )}
+
+      {/* =====================================
+          SPLIT RESULTS
+      ====================================== */}
+
+      {toolId ===
+        "image-splitter" &&
+        resultFiles.length > 1 && (
+          <div className="rounded-2xl border bg-background p-6">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h3 className="font-semibold">
+                  Split Images
+                </h3>
+
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {resultFiles.length} images
+                  generated
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={
+                  downloadAllResults
+                }
+                className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                Download All
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {resultFiles.map(
-                (file, index) => (
-                  <button
-                    key={index}
-                    type="button"
-                    onClick={() =>
-                      downloadSplit(
-                        file,
-                        index
-                      )
-                    }
-                    className="rounded-xl border px-4 py-3 text-sm font-medium"
-                  >
-                    Download Part{" "}
-                    {index + 1}
-                  </button>
-                )
+                (blob, index) => {
+                  const url =
+                    URL.createObjectURL(
+                      blob
+                    );
+
+                  return (
+                    <div
+                      key={index}
+                      className="overflow-hidden rounded-xl border"
+                    >
+                      <Image
+                        src={url}
+                        alt={`Split ${index + 1}`}
+                        className="aspect-square w-full object-contain bg-muted/20"
+                        onLoad={() =>
+                          URL.revokeObjectURL(
+                            url
+                          )
+                        }
+                      />
+
+                      <div className="p-3">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            downloadBlob(
+                              blob,
+                              `workabhi-split-${
+                                index + 1
+                              }.${getOutputExtension(
+                                blob.type
+                              )}`
+                            )
+                          }
+                          className="w-full rounded-lg border px-3 py-2 text-sm font-medium hover:bg-muted"
+                        >
+                          Download
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
               )}
             </div>
-          )}
-        </section>
-      )}
-    </div>
-  );
-}
-
-/*
- * =============================================================
- * NUMBER INPUT
- * =============================================================
- */
-
-function NumberInput({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium">
-        {label}
-      </label>
-
-      <input
-        type="number"
-        value={value}
-        onChange={(event) =>
-          onChange(
-            event.target.value
-          )
-        }
-        className="mt-2 w-full rounded-lg border px-3 py-2"
-      />
-    </div>
-  );
-}
-
-/*
- * =============================================================
- * TEXT INPUT
- * =============================================================
- */
-
-function TextInput({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div>
-      <label className="text-sm font-medium">
-        {label}
-      </label>
-
-      <input
-        type="text"
-        value={value}
-        onChange={(event) =>
-          onChange(
-            event.target.value
-          )
-        }
-        className="mt-2 w-full rounded-lg border px-3 py-2"
-      />
-    </div>
-  );
-}
-
-/*
- * =============================================================
- * RANGE INPUT
- * =============================================================
- */
-
-function Range({
-  label,
-  value,
-  min,
-  max,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <div>
-      <div className="flex justify-between">
-        <label className="text-sm font-medium">
-          {label}
-        </label>
-
-        <span className="text-sm text-muted-foreground">
-          {value}
-        </span>
-      </div>
-
-      <input
-        type="range"
-        min={min}
-        max={max}
-        value={value}
-        onChange={(event) =>
-          onChange(
-            Number(
-              event.target.value
-            )
-          )
-        }
-        className="mt-2 w-full"
-      />
-    </div>
-  );
-}
-
-/*
- * =============================================================
- * INFO
- * =============================================================
- */
-
-function Info({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-lg bg-muted/40 p-3">
-      <div className="text-xs text-muted-foreground">
-        {label}
-      </div>
-
-      <div className="mt-1 break-all text-sm font-medium">
-        {value}
-      </div>
+          </div>
+        )}
     </div>
   );
 }

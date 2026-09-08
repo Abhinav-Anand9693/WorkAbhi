@@ -1,8 +1,58 @@
-import {
-  canvasToBlob,
-  createCanvas,
-  loadImage,
-} from "./imageTransformEngine";
+"use client";
+
+function loadImage(
+  source: File | Blob
+): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(source);
+    const image = new Image();
+
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(
+        new Error("Unable to load image.")
+      );
+    };
+
+    image.src = url;
+  });
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type:
+    | "image/jpeg"
+    | "image/png"
+    | "image/webp" = "image/png"
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(
+            new Error(
+              "Unable to create image."
+            )
+          );
+          return;
+        }
+
+        resolve(blob);
+      },
+      type,
+      0.92
+    );
+  });
+}
+
+/* ==========================================
+   CROP
+========================================== */
 
 export interface CropOptions {
   x: number;
@@ -12,35 +62,28 @@ export interface CropOptions {
 }
 
 export async function cropImage(
-  file: File,
+  source: File | Blob,
   options: CropOptions
 ): Promise<Blob> {
-  const image =
-    await loadImage(file);
+  const image = await loadImage(source);
 
   const x = Math.max(
     0,
-    Math.min(
-      options.x,
-      image.naturalWidth
-    )
+    Math.floor(options.x)
   );
 
   const y = Math.max(
     0,
-    Math.min(
-      options.y,
-      image.naturalHeight
-    )
+    Math.floor(options.y)
   );
 
   const width = Math.min(
-    options.width,
+    Math.floor(options.width),
     image.naturalWidth - x
   );
 
   const height = Math.min(
-    options.height,
+    Math.floor(options.height),
     image.naturalHeight - y
   );
 
@@ -51,21 +94,21 @@ export async function cropImage(
   }
 
   const canvas =
-    createCanvas(
-      width,
-      height
-    );
+    document.createElement("canvas");
 
-  const context =
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx =
     canvas.getContext("2d");
 
-  if (!context) {
+  if (!ctx) {
     throw new Error(
       "Canvas is not supported."
     );
   }
 
-  context.drawImage(
+  ctx.drawImage(
     image,
     x,
     y,
@@ -79,49 +122,48 @@ export async function cropImage(
 
   return canvasToBlob(
     canvas,
-    "image/png",
-    0.95
+    "image/png"
   );
 }
 
+/* ==========================================
+   CIRCULAR CROP
+========================================== */
+
 export async function circularCrop(
-  file: File
+  source: File | Blob
 ): Promise<Blob> {
-  const image =
-    await loadImage(file);
+  const image = await loadImage(source);
 
-  const size =
-    Math.min(
-      image.naturalWidth,
-      image.naturalHeight
-    );
-
-  const sourceX =
-    (image.naturalWidth - size) /
-    2;
-
-  const sourceY =
-    (image.naturalHeight - size) /
-    2;
+  const size = Math.min(
+    image.naturalWidth,
+    image.naturalHeight
+  );
 
   const canvas =
-    createCanvas(
-      size,
-      size
-    );
+    document.createElement("canvas");
 
-  const context =
+  canvas.width = size;
+  canvas.height = size;
+
+  const ctx =
     canvas.getContext("2d");
 
-  if (!context) {
+  if (!ctx) {
     throw new Error(
       "Canvas is not supported."
     );
   }
 
-  context.beginPath();
+  const offsetX =
+    (image.naturalWidth - size) / 2;
 
-  context.arc(
+  const offsetY =
+    (image.naturalHeight - size) / 2;
+
+  ctx.beginPath();
+
+  ctx.arc(
     size / 2,
     size / 2,
     size / 2,
@@ -129,14 +171,13 @@ export async function circularCrop(
     Math.PI * 2
   );
 
-  context.closePath();
+  ctx.closePath();
+  ctx.clip();
 
-  context.clip();
-
-  context.drawImage(
+  ctx.drawImage(
     image,
-    sourceX,
-    sourceY,
+    offsetX,
+    offsetY,
     size,
     size,
     0,
@@ -147,224 +188,225 @@ export async function circularCrop(
 
   return canvasToBlob(
     canvas,
-    "image/png",
-    1
+    "image/png"
   );
 }
 
-export async function overlayImages(
-  backgroundFile: File,
-  overlayFile: File,
-  options?: {
-    x?: number;
-    y?: number;
-    width?: number;
-    opacity?: number;
-  }
-): Promise<Blob> {
-  const background =
-    await loadImage(
-      backgroundFile
-    );
+/* ==========================================
+   OVERLAY
+========================================== */
 
-  const overlay =
-    await loadImage(
-      overlayFile
-    );
+export async function overlayImages(
+  background: File | Blob,
+  overlay: File | Blob
+): Promise<Blob> {
+  const base =
+    await loadImage(background);
+
+  const top =
+    await loadImage(overlay);
 
   const canvas =
-    createCanvas(
-      background.naturalWidth,
-      background.naturalHeight
-    );
+    document.createElement("canvas");
 
-  const context =
+  canvas.width =
+    base.naturalWidth;
+
+  canvas.height =
+    base.naturalHeight;
+
+  const ctx =
     canvas.getContext("2d");
 
-  if (!context) {
+  if (!ctx) {
     throw new Error(
       "Canvas is not supported."
     );
   }
 
-  context.drawImage(
-    background,
+  ctx.drawImage(
+    base,
     0,
     0
   );
 
-  const width =
-    options?.width ??
-    overlay.naturalWidth;
+  const scale = Math.min(
+    base.naturalWidth /
+      top.naturalWidth,
+    base.naturalHeight /
+      top.naturalHeight,
+    1
+  );
 
-  const ratio =
-    width /
-    overlay.naturalWidth;
+  const width =
+    top.naturalWidth * scale;
 
   const height =
-    overlay.naturalHeight *
-    ratio;
+    top.naturalHeight * scale;
 
-  context.globalAlpha =
-    options?.opacity ?? 1;
+  const x =
+    (canvas.width - width) / 2;
 
-  context.drawImage(
-    overlay,
-    options?.x ?? 0,
-    options?.y ?? 0,
+  const y =
+    (canvas.height - height) / 2;
+
+  ctx.globalAlpha = 0.5;
+
+  ctx.drawImage(
+    top,
+    x,
+    y,
     width,
     height
   );
 
-  context.globalAlpha = 1;
+  ctx.globalAlpha = 1;
 
   return canvasToBlob(
     canvas,
-    "image/png",
-    0.95
+    "image/png"
   );
 }
+
+/* ==========================================
+   MERGE
+========================================== */
 
 export async function mergeImages(
-  files: File[],
-  direction: "horizontal" | "vertical" = "vertical"
+  sources: Array<File | Blob>
 ): Promise<Blob> {
-  if (files.length < 2) {
+  if (sources.length < 2) {
     throw new Error(
-      "Select at least two images."
+      "Please provide at least two images."
     );
   }
 
   const images =
     await Promise.all(
-      files.map(loadImage)
+      sources.map(loadImage)
     );
 
-  const width =
-    direction === "horizontal"
-      ? images.reduce(
-          (total, image) =>
-            total +
-            image.naturalWidth,
-          0
-        )
-      : Math.max(
-          ...images.map(
-            (image) =>
-              image.naturalWidth
-          )
-        );
+  const gap = 20;
+
+  const width = Math.max(
+    ...images.map(
+      (image) => image.naturalWidth
+    )
+  );
 
   const height =
-    direction === "vertical"
-      ? images.reduce(
-          (total, image) =>
-            total +
-            image.naturalHeight,
-          0
-        )
-      : Math.max(
-          ...images.map(
-            (image) =>
-              image.naturalHeight
-          )
-        );
+    images.reduce(
+      (total, image) =>
+        total +
+        image.naturalHeight,
+      0
+    ) +
+    gap *
+      (images.length - 1);
 
   const canvas =
-    createCanvas(
-      width,
-      height
-    );
+    document.createElement("canvas");
 
-  const context =
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx =
     canvas.getContext("2d");
 
-  if (!context) {
+  if (!ctx) {
     throw new Error(
       "Canvas is not supported."
     );
   }
 
-  let offset = 0;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(
+    0,
+    0,
+    width,
+    height
+  );
+
+  let currentY = 0;
 
   for (const image of images) {
-    if (
-      direction ===
-      "horizontal"
-    ) {
-      context.drawImage(
-        image,
-        offset,
-        0
-      );
+    const x =
+      (width -
+        image.naturalWidth) /
+      2;
 
-      offset +=
-        image.naturalWidth;
-    } else {
-      context.drawImage(
-        image,
-        0,
-        offset
-      );
+    ctx.drawImage(
+      image,
+      x,
+      currentY
+    );
 
-      offset +=
-        image.naturalHeight;
-    }
+    currentY +=
+      image.naturalHeight +
+      gap;
   }
 
   return canvasToBlob(
     canvas,
-    "image/png",
-    0.95
+    "image/png"
   );
 }
 
+/* ==========================================
+   COLLAGE
+========================================== */
+
 export async function createCollage(
-  files: File[],
-  columns = 2,
-  gap = 10
+  sources: Array<File | Blob>
 ): Promise<Blob> {
-  if (files.length < 2) {
+  if (sources.length < 2) {
     throw new Error(
-      "Select at least two images."
+      "Please provide at least two images."
     );
   }
 
   const images =
     await Promise.all(
-      files.map(loadImage)
+      sources.map(loadImage)
     );
 
-  const cellWidth = 400;
-  const cellHeight = 300;
+  const columns =
+    images.length <= 2
+      ? images.length
+      : Math.ceil(
+          Math.sqrt(images.length)
+        );
 
-  const rows =
-    Math.ceil(
-      images.length / columns
-    );
+  const rows = Math.ceil(
+    images.length / columns
+  );
+
+  const cellSize = 400;
+  const gap = 10;
 
   const canvas =
-    createCanvas(
-      columns *
-        cellWidth +
-        (columns - 1) * gap,
-      rows *
-        cellHeight +
-        (rows - 1) * gap
-    );
+    document.createElement("canvas");
 
-  const context =
+  canvas.width =
+    columns * cellSize +
+    (columns - 1) * gap;
+
+  canvas.height =
+    rows * cellSize +
+    (rows - 1) * gap;
+
+  const ctx =
     canvas.getContext("2d");
 
-  if (!context) {
+  if (!ctx) {
     throw new Error(
       "Canvas is not supported."
     );
   }
 
-  context.fillStyle = "#ffffff";
+  ctx.fillStyle = "#ffffff";
 
-  context.fillRect(
+  ctx.fillRect(
     0,
     0,
     canvas.width,
@@ -377,48 +419,39 @@ export async function createCollage(
         index % columns;
 
       const row =
-        Math.floor(
-          index / columns
-        );
+        Math.floor(index / columns);
 
       const x =
         column *
-          (cellWidth + gap);
+        (cellSize + gap);
 
       const y =
         row *
-          (cellHeight + gap);
+        (cellSize + gap);
 
-      const scale =
-        Math.min(
-          cellWidth /
-            image.naturalWidth,
-          cellHeight /
-            image.naturalHeight
-        );
+      const scale = Math.min(
+        cellSize /
+          image.naturalWidth,
+        cellSize /
+          image.naturalHeight
+      );
 
       const width =
-        image.naturalWidth *
-        scale;
+        image.naturalWidth * scale;
 
       const height =
-        image.naturalHeight *
-        scale;
+        image.naturalHeight * scale;
 
-      const centeredX =
-        x +
-        (cellWidth - width) /
-          2;
+      const drawX =
+        x + (cellSize - width) / 2;
 
-      const centeredY =
-        y +
-        (cellHeight - height) /
-          2;
+      const drawY =
+        y + (cellSize - height) / 2;
 
-      context.drawImage(
+      ctx.drawImage(
         image,
-        centeredX,
-        centeredY,
+        drawX,
+        drawY,
         width,
         height
       );
@@ -427,81 +460,92 @@ export async function createCollage(
 
   return canvasToBlob(
     canvas,
-    "image/jpeg",
-    0.92
+    "image/jpeg"
   );
 }
 
+/* ==========================================
+   SPLIT
+========================================== */
+
 export async function splitImage(
-  file: File,
+  source: File | Blob,
   rows = 2,
   columns = 2
 ): Promise<Blob[]> {
   const image =
-    await loadImage(file);
+    await loadImage(source);
 
-  if (rows <= 0 || columns <= 0) {
-    throw new Error(
-      "Rows and columns must be positive."
-    );
-  }
+  rows = Math.max(
+    1,
+    Math.floor(rows)
+  );
 
-  const cellWidth =
+  columns = Math.max(
+    1,
+    Math.floor(columns)
+  );
+
+  const pieceWidth =
     Math.floor(
-      image.naturalWidth /
-        columns
+      image.naturalWidth / columns
     );
 
-  const cellHeight =
+  const pieceHeight =
     Math.floor(
-      image.naturalHeight /
-        rows
+      image.naturalHeight / rows
     );
 
   const results: Blob[] = [];
 
-  for (
-    let row = 0;
-    row < rows;
-    row++
-  ) {
+  for (let row = 0; row < rows; row++) {
     for (
       let column = 0;
       column < columns;
       column++
     ) {
       const canvas =
-        createCanvas(
-          cellWidth,
-          cellHeight
+        document.createElement(
+          "canvas"
         );
 
-      const context =
+      canvas.width =
+        column === columns - 1
+          ? image.naturalWidth -
+            pieceWidth * column
+          : pieceWidth;
+
+      canvas.height =
+        row === rows - 1
+          ? image.naturalHeight -
+            pieceHeight * row
+          : pieceHeight;
+
+      const ctx =
         canvas.getContext("2d");
 
-      if (!context) {
+      if (!ctx) {
         throw new Error(
           "Canvas is not supported."
         );
       }
 
-      context.drawImage(
+      ctx.drawImage(
         image,
-        column * cellWidth,
-        row * cellHeight,
-        cellWidth,
-        cellHeight,
+        column * pieceWidth,
+        row * pieceHeight,
+        canvas.width,
+        canvas.height,
         0,
         0,
-        cellWidth,
-        cellHeight
+        canvas.width,
+        canvas.height
       );
 
       results.push(
         await canvasToBlob(
           canvas,
-          "image/png",
-          0.95
+          "image/png"
         )
       );
     }

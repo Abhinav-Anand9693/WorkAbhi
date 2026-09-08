@@ -1,113 +1,131 @@
-export interface ImageMetadata {
-  name: string;
-  type: string;
-  size: number;
-  sizeKB: number;
-  sizeMB: number;
-  width: number;
-  height: number;
-  aspectRatio: string;
-  lastModified: string;
+"use client";
+
+/* ==========================================
+   LOAD IMAGE
+========================================== */
+
+function loadImage(
+  source: File | Blob
+): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(source);
+    const image = new Image();
+
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(
+        new Error("Unable to load image.")
+      );
+    };
+
+    image.src = url;
+  });
 }
+
+/* ==========================================
+   METADATA
+========================================== */
 
 export async function getImageMetadata(
   file: File
-): Promise<ImageMetadata> {
-  const dimensions =
-    await getImageDimensions(
-      file
-    );
-
-  const ratio =
-    dimensions.width /
-    dimensions.height;
+) {
+  const image =
+    await loadImage(file);
 
   return {
-    name: file.name,
-    type: file.type || "unknown",
-    size: file.size,
-    sizeKB:
-      Number(
-        (file.size / 1024).toFixed(2)
-      ),
-    sizeMB:
-      Number(
-        (
-          file.size /
-          (1024 * 1024)
-        ).toFixed(2)
-      ),
+    fileName: file.name,
+    fileSize: file.size,
+    fileSizeFormatted:
+      formatBytes(file.size),
+
+    mimeType: file.type,
+
     width:
-      dimensions.width,
+      image.naturalWidth,
+
     height:
-      dimensions.height,
+      image.naturalHeight,
+
     aspectRatio:
       simplifyAspectRatio(
-        dimensions.width,
-        dimensions.height
+        image.naturalWidth,
+        image.naturalHeight
       ),
+
     lastModified:
       new Date(
         file.lastModified
       ).toLocaleString(),
+
+    fileLastModified:
+      file.lastModified,
+
+    type:
+      file.type
+        .split("/")
+        .pop()
+        ?.toUpperCase() ?? "UNKNOWN",
   };
 }
 
-export function getImageDimensions(
+/* ==========================================
+   DIMENSIONS
+========================================== */
+
+export async function getImageDimensions(
   file: File
-): Promise<{
-  width: number;
-  height: number;
-}> {
-  return new Promise(
-    (resolve, reject) => {
-      const url =
-        URL.createObjectURL(
-          file
-        );
+) {
+  const image =
+    await loadImage(file);
 
-      const image =
-        new Image();
+  return {
+    width:
+      image.naturalWidth,
 
-      image.onload = () => {
-        URL.revokeObjectURL(
-          url
-        );
+    height:
+      image.naturalHeight,
 
-        resolve({
-          width:
-            image.naturalWidth,
-          height:
-            image.naturalHeight,
-        });
-      };
-
-      image.onerror = () => {
-        URL.revokeObjectURL(
-          url
-        );
-
-        reject(
-          new Error(
-            "Unable to read image dimensions."
-          )
-        );
-      };
-
-      image.src = url;
-    }
-  );
+    aspectRatio:
+      simplifyAspectRatio(
+        image.naturalWidth,
+        image.naturalHeight
+      ),
+  };
 }
+
+/* ==========================================
+   ASPECT RATIO
+========================================== */
 
 export function simplifyAspectRatio(
   width: number,
   height: number
-): string {
-  const divisor =
-    greatestCommonDivisor(
-      width,
-      height
-    );
+) {
+  if (
+    width <= 0 ||
+    height <= 0
+  ) {
+    return "0:0";
+  }
+
+  function gcd(
+    a: number,
+    b: number
+  ): number {
+    return b === 0
+      ? a
+      : gcd(b, a % b);
+  }
+
+  const divisor = gcd(
+    Math.round(width),
+    Math.round(height)
+  );
 
   return `${Math.round(
     width / divisor
@@ -116,30 +134,42 @@ export function simplifyAspectRatio(
   )}`;
 }
 
-function greatestCommonDivisor(
-  a: number,
-  b: number
-): number {
-  let x = Math.abs(
-    Math.round(a)
-  );
+/* ==========================================
+   BYTES
+========================================== */
 
-  let y = Math.abs(
-    Math.round(b)
-  );
-
-  while (y !== 0) {
-    const remainder =
-      x % y;
-
-    x = y;
-    y = remainder;
+function formatBytes(
+  bytes: number
+) {
+  if (bytes === 0) {
+    return "0 B";
   }
 
-  return x || 1;
+  const units = [
+    "B",
+    "KB",
+    "MB",
+    "GB",
+  ];
+
+  const index = Math.floor(
+    Math.log(bytes) /
+      Math.log(1024)
+  );
+
+  return `${(
+    bytes /
+    Math.pow(1024, index)
+  ).toFixed(2)} ${
+    units[index]
+  }`;
 }
 
-export async function imageToDataURL(
+/* ==========================================
+   DATA URL
+========================================== */
+
+export function imageToDataURL(
   file: File
 ): Promise<string> {
   return new Promise(
@@ -148,131 +178,134 @@ export async function imageToDataURL(
         new FileReader();
 
       reader.onload = () => {
-        if (
-          typeof reader.result !==
-          "string"
-        ) {
-          reject(
-            new Error(
-              "Unable to generate Data URL."
-            )
-          );
-
-          return;
-        }
-
         resolve(
-          reader.result
+          reader.result as string
         );
       };
 
       reader.onerror = () => {
         reject(
           new Error(
-            "Unable to read image."
+            "Unable to convert image to Data URL."
           )
         );
       };
 
-      reader.readAsDataURL(
-        file
-      );
+      reader.readAsDataURL(file);
     }
   );
 }
 
+/* ==========================================
+   COLOR PICKER
+========================================== */
+
+export interface PickedColor {
+  hex: string;
+  rgb: {
+    r: number;
+    g: number;
+    b: number;
+  };
+  rgba: {
+    r: number;
+    g: number;
+    b: number;
+    a: number;
+  };
+}
+
 export async function pickColor(
-  file: File,
+  file: File | Blob,
   x: number,
   y: number
-): Promise<{
-  hex: string;
-  rgb: string;
-}> {
-  const url =
-    URL.createObjectURL(
-      file
+): Promise<PickedColor> {
+  const image =
+    await loadImage(file);
+
+  const canvas =
+    document.createElement("canvas");
+
+  canvas.width =
+    image.naturalWidth;
+
+  canvas.height =
+    image.naturalHeight;
+
+  const ctx =
+    canvas.getContext(
+      "2d",
+      {
+        willReadFrequently: true,
+      }
     );
 
-  try {
-    const image =
-      await new Promise<HTMLImageElement>(
-        (resolve, reject) => {
-          const img =
-            new Image();
-
-          img.onload = () =>
-            resolve(img);
-
-          img.onerror = () =>
-            reject(
-              new Error(
-                "Unable to load image."
-              )
-            );
-
-          img.src = url;
-        }
-      );
-
-    const canvas =
-      document.createElement(
-        "canvas"
-      );
-
-    canvas.width =
-      image.naturalWidth;
-
-    canvas.height =
-      image.naturalHeight;
-
-    const context =
-      canvas.getContext(
-        "2d"
-      );
-
-    if (!context) {
-      throw new Error(
-        "Canvas is not supported."
-      );
-    }
-
-    context.drawImage(
-      image,
-      0,
-      0
-    );
-
-    const pixel =
-      context.getImageData(
-        Math.round(x),
-        Math.round(y),
-        1,
-        1
-      ).data;
-
-    const red = pixel[0];
-    const green = pixel[1];
-    const blue = pixel[2];
-
-    return {
-      hex:
-        "#" +
-        [red, green, blue]
-          .map((value) =>
-            value
-              .toString(16)
-              .padStart(2, "0")
-          )
-          .join("")
-          .toUpperCase(),
-
-      rgb:
-        `rgb(${red}, ${green}, ${blue})`,
-    };
-  } finally {
-    URL.revokeObjectURL(
-      url
+  if (!ctx) {
+    throw new Error(
+      "Canvas is not supported."
     );
   }
+
+  ctx.drawImage(
+    image,
+    0,
+    0
+  );
+
+  const safeX = Math.max(
+    0,
+    Math.min(
+      image.naturalWidth - 1,
+      Math.floor(x)
+    )
+  );
+
+  const safeY = Math.max(
+    0,
+    Math.min(
+      image.naturalHeight - 1,
+      Math.floor(y)
+    )
+  );
+
+  const pixel =
+    ctx.getImageData(
+      safeX,
+      safeY,
+      1,
+      1
+    ).data;
+
+  const r = pixel[0];
+  const g = pixel[1];
+  const b = pixel[2];
+  const a = pixel[3];
+
+  const hex =
+    "#" +
+    [r, g, b]
+      .map((value) =>
+        value
+          .toString(16)
+          .padStart(2, "0")
+      )
+      .join("")
+      .toUpperCase();
+
+  return {
+    hex,
+
+    rgb: {
+      r,
+      g,
+      b,
+    },
+
+    rgba: {
+      r,
+      g,
+      b,
+      a,
+    },
+  };
 }
