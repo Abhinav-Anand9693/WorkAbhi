@@ -120,7 +120,6 @@ export async function getImageMetadata(
       iptc: true,
       jfif: true,
       ihdr: true,
-      silentErrors: true,
       translateKeys: true,
       translateValues: true,
       reviveValues: true,
