@@ -1,8 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+
 import ImageUploader from "./ImageUploader";
 import ImagePreview from "./ImagePreview";
+import ImageControls from "./ImageController";
+
 import {
   compressImage,
   compressToTargetSize,
@@ -11,7 +14,6 @@ import {
   resizeByPercentage,
 } from "@/engine/image/imageCompressionEngine";
 
-import Image from "next/image";
 import {
   addBorder,
   roundedCorners,
@@ -36,13 +38,11 @@ import {
 import {
   getImageMetadata,
   imageToDataURL,
-  pickColor
+  pickColor,
 } from "@/engine/image/imageUtilityEngine";
 
 import { imageTools } from "@/config/imageTools";
 import type { ImageToolDefinition } from "@/types/image";
-
-import ImageControls from "./ImageController";
 
 interface ImageToolProps {
   toolId: string;
@@ -125,57 +125,57 @@ const DEFAULT_SETTINGS: ProcessingSettings = {
   cropHeight: 500,
 };
 
-function formatBytes(bytes: number) {
+function formatBytes(bytes: number): string {
   if (!bytes) return "0 B";
 
   const units = ["B", "KB", "MB", "GB"];
-  const index = Math.floor(Math.log(bytes) / Math.log(1024));
+
+  const index = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1
+  );
 
   return `${(bytes / Math.pow(1024, index)).toFixed(2)} ${
     units[index]
   }`;
 }
 
-function downloadBlob(blob: Blob, filename: string) {
+function downloadBlob(
+  blob: Blob,
+  filename: string
+): void {
   const url = URL.createObjectURL(blob);
 
   const anchor = document.createElement("a");
+
   anchor.href = url;
   anchor.download = filename;
+
   document.body.appendChild(anchor);
+
   anchor.click();
+
   anchor.remove();
 
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
-function getOutputExtension(type: string) {
+function getOutputExtension(type: string): string {
   if (type === "image/png") return "png";
   if (type === "image/webp") return "webp";
+
   return "jpg";
 }
 
-function getMimeTypeForTool(toolId: string): OutputFormat {
-  if (toolId === "jpg-compressor") {
-    return "image/jpeg";
-  }
-
-  if (toolId === "png-compressor") {
-    return "image/png";
-  }
-
-  if (toolId === "webp-compressor") {
-    return "image/webp";
-  }
-
-  return "image/jpeg";
-}
-
-function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
+function loadImageFromBlob(
+  blob: Blob
+): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
-   const image =
-  document.createElement("img");
+
+    const image = document.createElement("img");
 
     image.onload = () => {
       URL.revokeObjectURL(url);
@@ -191,8 +191,32 @@ function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
   });
 }
 
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: OutputFormat
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(
+            new Error("Unable to create processed image.")
+          );
+          return;
+        }
+
+        resolve(blob);
+      },
+      type,
+      type === "image/png"
+        ? undefined
+        : 0.92
+    );
+  });
+}
+
 /**
- * Generic canvas renderer used by adjustment/effect tools.
+ * Generic canvas image processor
  */
 async function processCanvasImage(
   file: File,
@@ -212,6 +236,7 @@ async function processCanvasImage(
   const image = await loadImageFromBlob(file);
 
   const canvas = document.createElement("canvas");
+
   canvas.width = image.naturalWidth;
   canvas.height = image.naturalHeight;
 
@@ -220,49 +245,32 @@ async function processCanvasImage(
   });
 
   if (!ctx) {
-    throw new Error("Canvas is not supported by this browser.");
+    throw new Error(
+      "Canvas is not supported by this browser."
+    );
   }
 
-  ctx.drawImage(image, 0, 0);
-
-  const imageData = ctx.getImageData(
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
-
-  const data = imageData.data;
-
   if (mode === "blur") {
-    const radius = Math.max(1, settings.effectValue);
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const radius = Math.max(
+      1,
+      Math.round(settings.effectValue)
+    );
 
     ctx.filter = `blur(${radius}px)`;
     ctx.drawImage(image, 0, 0);
     ctx.filter = "none";
 
-    return new Promise((resolve, reject) => {
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) {
-            reject(new Error("Unable to create image."));
-          } else {
-            resolve(blob);
-          }
-        },
-        "image/png"
-      );
-    });
+    return canvasToBlob(canvas, "image/png");
   }
 
   if (mode === "pixelate") {
-    const size = Math.max(2, settings.effectValue);
+    const size = Math.max(
+      2,
+      Math.round(settings.effectValue)
+    );
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const smallCanvas = document.createElement("canvas");
+    const smallCanvas =
+      document.createElement("canvas");
 
     const smallWidth = Math.max(
       1,
@@ -277,11 +285,16 @@ async function processCanvasImage(
     smallCanvas.width = smallWidth;
     smallCanvas.height = smallHeight;
 
-    const smallCtx = smallCanvas.getContext("2d");
+    const smallCtx =
+      smallCanvas.getContext("2d");
 
     if (!smallCtx) {
-      throw new Error("Unable to create pixelation canvas.");
+      throw new Error(
+        "Unable to create pixelation canvas."
+      );
     }
+
+    smallCtx.imageSmoothingEnabled = false;
 
     smallCtx.drawImage(
       image,
@@ -305,21 +318,25 @@ async function processCanvasImage(
       canvas.height
     );
 
-    return new Promise((resolve, reject) => {
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) {
-            reject(new Error("Unable to create image."));
-          } else {
-            resolve(blob);
-          }
-        },
-        "image/png"
-      );
-    });
+    return canvasToBlob(canvas, "image/png");
   }
 
-  for (let i = 0; i < data.length; i += 4) {
+  ctx.drawImage(image, 0, 0);
+
+  const imageData = ctx.getImageData(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  const data = imageData.data;
+
+  for (
+    let i = 0;
+    i < data.length;
+    i += 4
+  ) {
     let r = data[i];
     let g = data[i + 1];
     let b = data[i + 2];
@@ -342,7 +359,8 @@ async function processCanvasImage(
         0.587 * g +
         0.114 * b;
 
-      const value = gray > 128 ? 255 : 0;
+      const value =
+        gray > 128 ? 255 : 0;
 
       r = value;
       g = value;
@@ -350,7 +368,8 @@ async function processCanvasImage(
     }
 
     if (mode === "brightness") {
-      const amount = settings.brightness * 2.55;
+      const amount =
+        settings.brightness * 2.55;
 
       r += amount;
       g += amount;
@@ -359,64 +378,92 @@ async function processCanvasImage(
 
     if (mode === "contrast") {
       const factor =
-        (259 * (settings.contrast + 255)) /
-        (255 * (259 - settings.contrast));
+        (259 *
+          (settings.contrast + 255)) /
+        (255 *
+          (259 - settings.contrast));
 
-      r = factor * (r - 128) + 128;
-      g = factor * (g - 128) + 128;
-      b = factor * (b - 128) + 128;
+      r =
+        factor * (r - 128) + 128;
+
+      g =
+        factor * (g - 128) + 128;
+
+      b =
+        factor * (b - 128) + 128;
     }
 
     if (mode === "saturation") {
-      const amount = settings.saturation / 100;
+      const amount =
+        settings.saturation / 100;
 
       const gray =
         0.299 * r +
         0.587 * g +
         0.114 * b;
 
-      r = gray + (r - gray) * (1 + amount);
-      g = gray + (g - gray) * (1 + amount);
-      b = gray + (b - gray) * (1 + amount);
+      r =
+        gray +
+        (r - gray) * (1 + amount);
+
+      g =
+        gray +
+        (g - gray) * (1 + amount);
+
+      b =
+        gray +
+        (b - gray) * (1 + amount);
     }
 
     if (mode === "hue") {
-      const shift = settings.hue;
-
       const max = Math.max(r, g, b);
       const min = Math.min(r, g, b);
 
-      let h = 0;
       const delta = max - min;
+
+      let h = 0;
 
       if (delta !== 0) {
         if (max === r) {
-          h = 60 * (((g - b) / delta) % 6);
+          h =
+            60 *
+            (((g - b) / delta) % 6);
         } else if (max === g) {
-          h = 60 * ((b - r) / delta + 2);
+          h =
+            60 *
+            ((b - r) / delta + 2);
         } else {
-          h = 60 * ((r - g) / delta + 4);
+          h =
+            60 *
+            ((r - g) / delta + 4);
         }
       }
 
-      if (h < 0) h += 360;
+      if (h < 0) {
+        h += 360;
+      }
 
-      h = (h + shift + 360) % 360;
+      h =
+        (h + settings.hue + 360) %
+        360;
 
       const s =
         max === 0
           ? 0
-          : (delta / max) * 255;
+          : delta / max;
 
-      const v = max;
+      const v = max / 255;
 
-      const c = (s / 255) * (v / 255);
+      const c = s * v;
+
       const x =
         c *
         (1 -
-          Math.abs(((h / 60) % 2) - 1));
+          Math.abs(
+            ((h / 60) % 2) - 1
+          ));
 
-      const m = v / 255 - c;
+      const m = v - c;
 
       let rr = 0;
       let gg = 0;
@@ -448,8 +495,10 @@ async function processCanvasImage(
     }
 
     if (mode === "exposure") {
-      const factor =
-        Math.pow(2, settings.exposure / 100);
+      const factor = Math.pow(
+        2,
+        settings.exposure / 100
+      );
 
       r *= factor;
       g *= factor;
@@ -457,70 +506,75 @@ async function processCanvasImage(
     }
 
     if (mode === "opacity") {
-      a =
-        a *
-        (settings.opacity / 100);
+      a *= settings.opacity / 100;
     }
 
-    data[i] = Math.max(0, Math.min(255, r));
+    data[i] = Math.max(
+      0,
+      Math.min(255, r)
+    );
+
     data[i + 1] = Math.max(
       0,
       Math.min(255, g)
     );
+
     data[i + 2] = Math.max(
       0,
       Math.min(255, b)
     );
+
     data[i + 3] = Math.max(
       0,
       Math.min(255, a)
     );
   }
 
-  ctx.putImageData(imageData, 0, 0);
+  ctx.putImageData(
+    imageData,
+    0,
+    0
+  );
 
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) {
-          reject(new Error("Unable to create processed image."));
-          return;
-        }
-
-        resolve(blob);
-      },
-      "image/png"
-    );
-  });
+  return canvasToBlob(
+    canvas,
+    "image/png"
+  );
 }
 
-/**
- * Main controller
- */
 export default function ImageTool({
   toolId,
 }: ImageToolProps) {
-  const definition = useMemo<ImageToolDefinition | undefined>(
-    () =>
-      imageTools.find(
-        (tool) => tool.toolId === toolId
-      ),
-    [toolId]
-  );
+  const definition =
+    useMemo<ImageToolDefinition | undefined>(
+      () =>
+        imageTools.find(
+          (tool) =>
+            tool.toolId === toolId
+        ),
+      [toolId]
+    );
 
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] =
+    useState<File[]>([]);
 
-  const [originalPreview, setOriginalPreview] =
-    useState<string | null>(null);
+  const [
+    originalPreview,
+    setOriginalPreview,
+  ] = useState<string | null>(null);
 
-  const [resultPreview, setResultPreview] =
-    useState<string | null>(null);
+  const [
+    resultPreview,
+    setResultPreview,
+  ] = useState<string | null>(null);
 
   const [result, setResult] =
     useState<Blob | null>(null);
 
-  const [resultFiles, setResultFiles] =
-    useState<Blob[]>([]);
+  const [
+    resultFiles,
+    setResultFiles,
+  ] = useState<Blob[]>([]);
 
   const [settings, setSettings] =
     useState<ProcessingSettings>(
@@ -537,25 +591,37 @@ export default function ImageTool({
     useState("");
 
   const [metadata, setMetadata] =
-    useState<Record<string, unknown> | null>(
-      null
-    );
+    useState<Record<
+      string,
+      unknown
+    > | null>(null);
 
   const [pickedColor, setPickedColor] =
     useState<string | null>(null);
 
+  /**
+   * Cleanup URLs only when component
+   * is finally unmounted.
+   */
   useEffect(() => {
     return () => {
       if (originalPreview) {
-        URL.revokeObjectURL(originalPreview);
+        URL.revokeObjectURL(
+          originalPreview
+        );
       }
 
       if (resultPreview) {
-        URL.revokeObjectURL(resultPreview);
+        URL.revokeObjectURL(
+          resultPreview
+        );
       }
     };
-  }, [originalPreview, resultPreview]);
+  }, []);
 
+  /**
+   * Tool not found.
+   */
   if (!definition) {
     return (
       <div className="rounded-2xl border p-8 text-center">
@@ -570,7 +636,9 @@ export default function ImageTool({
     );
   }
 
-  function updateSetting<K extends keyof ProcessingSettings>(
+  function updateSetting<
+    K extends keyof ProcessingSettings
+  >(
     key: K,
     value: ProcessingSettings[K]
   ) {
@@ -580,457 +648,655 @@ export default function ImageTool({
     }));
   }
 
-  function handleFiles(selectedFiles: File[]) {
-    if (!selectedFiles.length) return;
+  /**
+   * Determine whether this tool supports
+   * multiple images.
+   */
+  const isMultiple =
+    definition.multiple === true ||
+    toolId === "image-overlay" ||
+    toolId === "image-collage-maker" ||
+    toolId === "image-merger";
 
-    if (originalPreview) {
-      URL.revokeObjectURL(originalPreview);
+  const maxFiles =
+    toolId === "image-merger"
+      ? 20
+      : toolId === "image-collage-maker"
+        ? 12
+        : toolId === "image-overlay"
+          ? 2
+          : 1;
+
+  /**
+   * Handle file selection.
+   *
+   * IMPORTANT:
+   * For multiple-image tools we APPEND
+   * new files instead of replacing them.
+   */
+  function handleFiles(
+    selectedFiles: File[]
+  ) {
+    if (!selectedFiles.length) {
+      return;
+    }
+
+    let nextFiles: File[];
+
+    if (isMultiple) {
+      const combined = [
+        ...files,
+        ...selectedFiles,
+      ];
+
+      const uniqueFiles =
+        combined.filter(
+          (file, index, array) =>
+            array.findIndex(
+              (candidate) =>
+                candidate.name ===
+                  file.name &&
+                candidate.size ===
+                  file.size &&
+                candidate.lastModified ===
+                  file.lastModified
+            ) === index
+        );
+
+      nextFiles =
+        uniqueFiles.slice(
+          0,
+          maxFiles
+        );
+    } else {
+      nextFiles = [
+        selectedFiles[0],
+      ];
+    }
+
+    /**
+     * If the first image changed,
+     * recreate the original preview.
+     */
+    if (
+      !files.length ||
+      nextFiles[0] !== files[0]
+    ) {
+      if (originalPreview) {
+        URL.revokeObjectURL(
+          originalPreview
+        );
+      }
+
+      const previewUrl =
+        URL.createObjectURL(
+          nextFiles[0]
+        );
+
+      setOriginalPreview(
+        previewUrl
+      );
     }
 
     if (resultPreview) {
-      URL.revokeObjectURL(resultPreview);
+      URL.revokeObjectURL(
+        resultPreview
+      );
     }
 
-    setFiles(selectedFiles);
+    setFiles(nextFiles);
+
     setResult(null);
     setResultFiles([]);
     setResultPreview(null);
+
     setMetadata(null);
     setDataUrl("");
     setPickedColor(null);
+
     setError("");
-
-    const previewUrl = URL.createObjectURL(
-      selectedFiles[0]
-    );
-
-    setOriginalPreview(previewUrl);
   }
 
+  /**
+   * Reset everything.
+   */
   function resetTool() {
     if (originalPreview) {
-      URL.revokeObjectURL(originalPreview);
+      URL.revokeObjectURL(
+        originalPreview
+      );
     }
 
     if (resultPreview) {
-      URL.revokeObjectURL(resultPreview);
+      URL.revokeObjectURL(
+        resultPreview
+      );
     }
 
     setFiles([]);
+
     setResult(null);
     setResultFiles([]);
+
     setOriginalPreview(null);
     setResultPreview(null);
+
     setMetadata(null);
     setDataUrl("");
     setPickedColor(null);
+
     setError("");
-    setSettings(DEFAULT_SETTINGS);
+
+    setSettings({
+      ...DEFAULT_SETTINGS,
+    });
   }
 
+  /**
+   * Main processing function.
+   */
   async function processTool() {
     if (!files.length) {
-      setError("Please upload an image first.");
+      setError(
+        "Please upload an image first."
+      );
+
       return;
     }
 
     setLoading(true);
     setError("");
+
     setDataUrl("");
     setMetadata(null);
     setResultFiles([]);
 
     try {
-      const primaryFile = files[0];
+      const primaryFile =
+        files[0];
 
-      let output: Blob | null = null;
+      let output:
+        | Blob
+        | null = null;
+
       let outputs: Blob[] = [];
 
       /*
-       * ==========================================
+       * ========================================
        * COMPRESSION
-       * ==========================================
+       * ========================================
        */
 
-      if (toolId === "image-compressor") {
-        output = await compressImage(
-          primaryFile,
-          {
-            quality: settings.quality / 100,
-          }
-        );
+      if (
+        toolId ===
+        "image-compressor"
+      ) {
+        output =
+          await compressImage(
+            primaryFile,
+            {
+              quality:
+                settings.quality / 100,
+            }
+          );
       }
 
       else if (
-        toolId === "compress-image-to-50kb" ||
-        toolId === "compress-image-to-100kb" ||
-        toolId === "compress-image-to-200kb" ||
-        toolId === "compress-image-to-500kb" ||
-        toolId === "compress-image-to-1mb"
+        toolId ===
+          "compress-image-to-50kb" ||
+        toolId ===
+          "compress-image-to-100kb" ||
+        toolId ===
+          "compress-image-to-200kb" ||
+        toolId ===
+          "compress-image-to-500kb" ||
+        toolId ===
+          "compress-image-to-1mb"
       ) {
-        const targetMap: Record<string, number> = {
-          "compress-image-to-50kb": 50,
-          "compress-image-to-100kb": 100,
-          "compress-image-to-200kb": 200,
-          "compress-image-to-500kb": 500,
-          "compress-image-to-1mb": 1024,
-        };
-
-        output = await compressToTargetSize(
-          primaryFile,
+        const targetMap:
+          Record<string, number> =
           {
-            targetKB: targetMap[toolId],
-            outputType: "image/jpeg",
-          }
-        );
+            "compress-image-to-50kb":
+              50,
+
+            "compress-image-to-100kb":
+              100,
+
+            "compress-image-to-200kb":
+              200,
+
+            "compress-image-to-500kb":
+              500,
+
+            "compress-image-to-1mb":
+              1024,
+          };
+
+        output =
+          await compressToTargetSize(
+            primaryFile,
+            {
+              targetKB:
+                targetMap[toolId],
+
+              outputType:
+                "image/jpeg",
+            }
+          );
       }
 
       else if (
-        toolId === "jpg-compressor"
+        toolId ===
+        "jpg-compressor"
       ) {
-        output = await compressImage(
-          primaryFile,
-          {
-            quality:
-              settings.quality / 100,
-            outputType: "image/jpeg",
-          }
-        );
+        output =
+          await compressImage(
+            primaryFile,
+            {
+              quality:
+                settings.quality / 100,
+
+              outputType:
+                "image/jpeg",
+            }
+          );
       }
 
       else if (
-        toolId === "png-compressor"
+        toolId ===
+        "png-compressor"
       ) {
-        output = await compressImage(
-          primaryFile,
-          {
-            quality: 1,
-            outputType: "image/png",
-          }
-        );
+        output =
+          await compressImage(
+            primaryFile,
+            {
+              quality: 1,
+
+              outputType:
+                "image/png",
+            }
+          );
       }
 
       else if (
-        toolId === "webp-compressor"
+        toolId ===
+        "webp-compressor"
       ) {
-        output = await compressImage(
-          primaryFile,
-          {
-            quality:
-              settings.quality / 100,
-            outputType: "image/webp",
-          }
-        );
+        output =
+          await compressImage(
+            primaryFile,
+            {
+              quality:
+                settings.quality / 100,
+
+              outputType:
+                "image/webp",
+            }
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * RESIZE
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "image-resizer"
+        toolId ===
+        "image-resizer"
       ) {
-        output = await compressImage(
-          primaryFile,
-          {
-            quality: 0.9,
-            maxWidth: settings.width,
-            maxHeight: settings.height,
-          }
-        );
+        output =
+          await compressImage(
+            primaryFile,
+            {
+              quality: 0.9,
+              maxWidth:
+                settings.width,
+              maxHeight:
+                settings.height,
+            }
+          );
       }
 
       else if (
-        toolId === "resize-image-by-width"
+        toolId ===
+        "resize-image-by-width"
       ) {
-        output = await resizeByWidth(
-          primaryFile,
-          settings.width
-        );
+        output =
+          await resizeByWidth(
+            primaryFile,
+            settings.width
+          );
       }
 
       else if (
-        toolId === "resize-image-by-height"
+        toolId ===
+        "resize-image-by-height"
       ) {
-        output = await resizeByHeight(
-          primaryFile,
-          settings.height
-        );
+        output =
+          await resizeByHeight(
+            primaryFile,
+            settings.height
+          );
       }
 
       else if (
         toolId ===
         "resize-image-by-percentage"
       ) {
-        output = await resizeByPercentage(
-          primaryFile,
-          settings.percentage
-        );
+        output =
+          await resizeByPercentage(
+            primaryFile,
+            settings.percentage
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * CROP
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "image-cropper"
+        toolId ===
+        "image-cropper"
       ) {
-        output = await cropImage(
-          primaryFile,
-          {
-            x: settings.cropX,
-            y: settings.cropY,
-            width: settings.cropWidth,
-            height: settings.cropHeight,
-          }
-        );
+        output =
+          await cropImage(
+            primaryFile,
+            {
+              x: settings.cropX,
+              y: settings.cropY,
+              width:
+                settings.cropWidth,
+              height:
+                settings.cropHeight,
+            }
+          );
       }
 
       else if (
         toolId ===
         "circular-image-cropper"
       ) {
-        output = await circularCrop(
-          primaryFile
-        );
+        output =
+          await circularCrop(
+            primaryFile
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * ROTATE / FLIP
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "image-rotator"
+        toolId ===
+        "image-rotator"
       ) {
-        output = await transformImage(
-          primaryFile,
-          {
-            rotate: settings.rotate,
-          }
-        );
+        output =
+          await transformImage(
+            primaryFile,
+            {
+              rotate:
+                settings.rotate,
+            }
+          );
       }
 
       else if (
-        toolId === "image-flipper"
+        toolId ===
+        "image-flipper"
       ) {
-        output = await transformImage(
-          primaryFile,
-          {
-            flip: settings.flip,
-          }
-        );
+        output =
+          await transformImage(
+            primaryFile,
+            {
+              flip:
+                settings.flip,
+            }
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * EFFECTS
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "image-sharpening"
+        toolId ===
+        "image-sharpening"
       ) {
-        output = await sharpenCanvas(
-          primaryFile,
-          settings.effectValue
-        );
+        output =
+          await sharpenCanvas(
+            primaryFile,
+            settings.effectValue
+          );
       }
 
       else if (
-        toolId === "image-blur"
+        toolId ===
+        "image-blur"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "blur"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "blur"
+          );
       }
 
       else if (
-        toolId === "pixelate-image"
+        toolId ===
+        "pixelate-image"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "pixelate"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "pixelate"
+          );
       }
 
       else if (
-        toolId === "grayscale-image"
+        toolId ===
+        "grayscale-image"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "grayscale"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "grayscale"
+          );
       }
 
       else if (
-        toolId === "black-and-white-image"
+        toolId ===
+        "black-and-white-image"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "black-white"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "black-white"
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * ADJUSTMENTS
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "brightness-adjuster"
+        toolId ===
+        "brightness-adjuster"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "brightness"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "brightness"
+          );
       }
 
       else if (
-        toolId === "contrast-adjuster"
+        toolId ===
+        "contrast-adjuster"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "contrast"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "contrast"
+          );
       }
 
       else if (
-        toolId === "saturation-adjuster"
+        toolId ===
+        "saturation-adjuster"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "saturation"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "saturation"
+          );
       }
 
       else if (
-        toolId === "hue-adjuster"
+        toolId ===
+        "hue-adjuster"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "hue"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "hue"
+          );
       }
 
       else if (
-        toolId === "exposure-adjuster"
+        toolId ===
+        "exposure-adjuster"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "exposure"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "exposure"
+          );
       }
 
       else if (
-        toolId === "opacity-adjuster"
+        toolId ===
+        "opacity-adjuster"
       ) {
-        output = await processCanvasImage(
-          primaryFile,
-          settings,
-          "opacity"
-        );
+        output =
+          await processCanvasImage(
+            primaryFile,
+            settings,
+            "opacity"
+          );
       }
 
       /*
-       * ==========================================
-       * BORDER / ROUNDED
-       * ==========================================
+       * ========================================
+       * BORDER
+       * ========================================
        */
 
       else if (
         toolId ===
         "image-border-generator"
       ) {
-        output = await addBorder(
-          primaryFile,
-          settings.borderSize,
-          settings.borderColor
-        );
+        output =
+          await addBorder(
+            primaryFile,
+            settings.borderSize,
+            settings.borderColor
+          );
       }
 
       else if (
-        toolId === "rounded-corners"
+        toolId ===
+        "rounded-corners"
       ) {
-        output = await roundedCorners(
-          primaryFile,
-          settings.radius
-        );
+        output =
+          await roundedCorners(
+            primaryFile,
+            settings.radius
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * TEXT / WATERMARK
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "add-text-to-image"
+        toolId ===
+        "add-text-to-image"
       ) {
-        output = await addTextToImage(
-          primaryFile,
-          {
-            text: settings.text,
-            fontSize: settings.textSize,
-            color: settings.textColor,
-          }
-        );
+        output =
+          await addTextToImage(
+            primaryFile,
+            {
+              text: settings.text,
+              fontSize:
+                settings.textSize,
+              color:
+                settings.textColor,
+            }
+          );
       }
 
       else if (
-        toolId === "image-watermark"
+        toolId ===
+        "image-watermark"
       ) {
-        output = await addWatermark(
-          primaryFile,
-          {
-            text: settings.text,
-            opacity:
-              settings.watermarkOpacity / 100,
-          }
-        );
+        output =
+          await addWatermark(
+            primaryFile,
+            {
+              text: settings.text,
+              opacity:
+                settings.watermarkOpacity /
+                100,
+            }
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * OVERLAY
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "image-overlay"
+        toolId ===
+        "image-overlay"
       ) {
         if (files.length < 2) {
           throw new Error(
-            "Please upload at least two images for overlay."
+            "Please add 2 images for overlay."
           );
         }
 
-        output = await overlayImages(
-          files[0],
-          files[1]
-        );
+        output =
+          await overlayImages(
+            files[0],
+            files[1]
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * COLLAGE
-       * ==========================================
+       * ========================================
        */
 
       else if (
@@ -1039,47 +1305,52 @@ export default function ImageTool({
       ) {
         if (files.length < 2) {
           throw new Error(
-            "Please upload at least two images for a collage."
+            "Please add at least 2 images for the collage."
           );
         }
 
-        output = await createCollage(
-          files
-        );
+        output =
+          await createCollage(
+            files
+          );
       }
 
       /*
-       * ==========================================
+       * ========================================
        * MERGE
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "image-merger"
+        toolId ===
+        "image-merger"
       ) {
         if (files.length < 2) {
           throw new Error(
-            "Please upload at least two images to merge."
+            "Please add at least 2 images to merge."
           );
         }
 
-        output = await mergeImages(
-          files
-        );
+        output =
+          await mergeImages(
+            files
+          );
       }
 
       /*
-       * ==========================================
-       * SPLIT
-       * ==========================================
+       * ========================================
+       * SPLITTER
+       * ========================================
        */
 
       else if (
-        toolId === "image-splitter"
+        toolId ===
+        "image-splitter"
       ) {
-        outputs = await splitImage(
-          primaryFile
-        );
+        outputs =
+          await splitImage(
+            primaryFile
+          );
 
         if (!outputs.length) {
           throw new Error(
@@ -1091,9 +1362,9 @@ export default function ImageTool({
       }
 
       /*
-       * ==========================================
-       * METADATA
-       * ==========================================
+       * ========================================
+       * METADATA VIEWER
+       * ========================================
        */
 
       else if (
@@ -1105,44 +1376,61 @@ export default function ImageTool({
             primaryFile
           );
 
-        setMetadata(
-          info as Record<string, unknown>
-        );
+        if (
+          !info ||
+          Object.keys(info).length === 0
+        ) {
+          setMetadata({
+            Message:
+              "No readable metadata found in this image.",
+          });
+        } else {
+          setMetadata(
+            info as Record<
+              string,
+              unknown
+            >
+          );
+        }
 
-        setLoading(false);
         return;
       }
 
       /*
-       * ==========================================
+       * ========================================
        * EXIF REMOVER
-       * ==========================================
+       * ========================================
        */
 
       else if (
-        toolId === "exif-remover"
+        toolId ===
+        "exif-remover"
       ) {
-        /*
-         * Re-rendering through Canvas strips
-         * embedded image metadata.
+        /**
+         * Drawing the image onto a fresh
+         * canvas removes embedded EXIF/
+         * metadata from the exported file.
          */
-        output = await compressImage(
-          primaryFile,
-          {
-            quality: 1,
-            outputType: "image/png",
-          }
-        );
+        output =
+          await compressImage(
+            primaryFile,
+            {
+              quality: 1,
+              outputType:
+                "image/png",
+            }
+          );
       }
 
       /*
-       * ==========================================
-       * DATA URL
-       * ==========================================
+       * ========================================
+       * IMAGE -> DATA URL
+       * ========================================
        */
 
       else if (
-        toolId === "image-to-data-url"
+        toolId ===
+        "image-to-data-url"
       ) {
         const url =
           await imageToDataURL(
@@ -1150,28 +1438,52 @@ export default function ImageTool({
           );
 
         setDataUrl(url);
-        setLoading(false);
+
+        /**
+         * Data URL is a representation of
+         * the original image, so use the
+         * original file as the result.
+         */
+        setResult(
+          primaryFile
+        );
+
+        setResultFiles([
+          primaryFile,
+        ]);
+
+        if (resultPreview) {
+          URL.revokeObjectURL(
+            resultPreview
+          );
+        }
+
+        const previewUrl =
+          URL.createObjectURL(
+            primaryFile
+          );
+
+        setResultPreview(
+          previewUrl
+        );
+
         return;
       }
 
       /*
-       * ==========================================
+       * ========================================
        * COLOR PICKER
-       * ==========================================
+       * ========================================
+       *
+       * No processing is required here.
+       * User picks the color by clicking
+       * directly on the image.
        */
 
       else if (
-        toolId === "image-color-picker"
+        toolId ===
+        "image-color-picker"
       ) {
-        /*
-         * Color picker is handled from
-         * the preview click interaction.
-         */
-        setError(
-          "Click on the image preview to pick a color."
-        );
-
-        setLoading(false);
         return;
       }
 
@@ -1188,8 +1500,11 @@ export default function ImageTool({
       }
 
       setResult(output);
+
       setResultFiles(
-        outputs.length ? outputs : [output]
+        outputs.length
+          ? outputs
+          : [output]
       );
 
       if (resultPreview) {
@@ -1199,13 +1514,18 @@ export default function ImageTool({
       }
 
       const previewUrl =
-        URL.createObjectURL(output);
+        URL.createObjectURL(
+          output
+        );
 
       setResultPreview(
         previewUrl
       );
     } catch (err) {
-      console.error(err);
+      console.error(
+        "Image processing error:",
+        err
+      );
 
       setError(
         err instanceof Error
@@ -1217,8 +1537,13 @@ export default function ImageTool({
     }
   }
 
+  /**
+   * Download main result.
+   */
   function downloadResult() {
-    if (!result) return;
+    if (!result) {
+      return;
+    }
 
     const extension =
       getOutputExtension(
@@ -1231,6 +1556,9 @@ export default function ImageTool({
     );
   }
 
+  /**
+   * Download all split results.
+   */
   function downloadAllResults() {
     resultFiles.forEach(
       (blob, index) => {
@@ -1247,313 +1575,524 @@ export default function ImageTool({
     );
   }
 
-async function handlePreviewClick(
-  event: React.MouseEvent<HTMLImageElement>
-) {
-  if (
-    toolId !== "image-color-picker" ||
-    !files[0]
+  /**
+   * Color picker.
+   */
+  async function handlePreviewClick(
+    event: React.MouseEvent<HTMLImageElement>
   ) {
-    return;
-  }
+    if (
+      toolId !==
+        "image-color-picker" ||
+      !files[0]
+    ) {
+      return;
+    }
 
-  try {
-    const image = event.currentTarget;
-    const rect =
-      image.getBoundingClientRect();
+    try {
+      const image =
+        event.currentTarget;
 
-    const x =
-      ((event.clientX - rect.left) /
-        rect.width) *
-      image.naturalWidth;
+      const rect =
+        image.getBoundingClientRect();
 
-    const y =
-      ((event.clientY - rect.top) /
-        rect.height) *
-      image.naturalHeight;
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        image.naturalWidth <= 0 ||
+        image.naturalHeight <= 0
+      ) {
+        throw new Error(
+          "Unable to read the image."
+        );
+      }
 
-    const color =
-      await pickColor(
-        files[0],
-        x,
-        y
+      const x = Math.max(
+        0,
+        Math.min(
+          image.naturalWidth - 1,
+          Math.round(
+            ((event.clientX -
+              rect.left) /
+              rect.width) *
+              image.naturalWidth
+          )
+        )
       );
 
-    setPickedColor(color.hex);
-    setError("");
-  } catch (err) {
-    setError(
-      err instanceof Error
-        ? err.message
-        : "Unable to pick color."
-    );
-  }
-}
+      const y = Math.max(
+        0,
+        Math.min(
+          image.naturalHeight - 1,
+          Math.round(
+            ((event.clientY -
+              rect.top) /
+              rect.height) *
+              image.naturalHeight
+          )
+        )
+      );
 
-  const isMultiple =
-    definition.multiple ||
-    toolId === "image-overlay" ||
-    toolId === "image-collage-maker" ||
-    toolId === "image-merger";
+      const color =
+        await pickColor(
+          files[0],
+          x,
+          y
+        );
+
+      setPickedColor(
+        color.hex
+      );
+
+      setError("");
+    } catch (err) {
+      console.error(
+        "Color picker error:",
+        err
+      );
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to pick color."
+      );
+    }
+  }
 
   const needsQuality =
-    toolId === "image-compressor" ||
-    toolId === "jpg-compressor" ||
-    toolId === "webp-compressor";
+    toolId ===
+      "image-compressor" ||
+    toolId ===
+      "jpg-compressor" ||
+    toolId ===
+      "webp-compressor";
 
   const needsWidth =
-    toolId === "image-resizer" ||
-    toolId === "resize-image-by-width";
+    toolId ===
+      "image-resizer" ||
+    toolId ===
+      "resize-image-by-width";
 
   const needsHeight =
-    toolId === "image-resizer" ||
-    toolId === "resize-image-by-height";
+    toolId ===
+      "image-resizer" ||
+    toolId ===
+      "resize-image-by-height";
 
   const needsPercentage =
     toolId ===
     "resize-image-by-percentage";
 
   const needsEffect =
-    toolId === "image-sharpening" ||
-    toolId === "image-blur" ||
-    toolId === "pixelate-image";
+    toolId ===
+      "image-sharpening" ||
+    toolId ===
+      "image-blur" ||
+    toolId ===
+      "pixelate-image";
 
   const needsAdjustment =
-    toolId === "brightness-adjuster" ||
-    toolId === "contrast-adjuster" ||
-    toolId === "saturation-adjuster" ||
-    toolId === "hue-adjuster" ||
-    toolId === "exposure-adjuster" ||
-    toolId === "opacity-adjuster";
+    toolId ===
+      "brightness-adjuster" ||
+    toolId ===
+      "contrast-adjuster" ||
+    toolId ===
+      "saturation-adjuster" ||
+    toolId ===
+      "hue-adjuster" ||
+    toolId ===
+      "exposure-adjuster" ||
+    toolId ===
+      "opacity-adjuster";
 
   return (
     <div className="space-y-6">
-      {/* =====================================
+
+      {/* ========================================
           UPLOADER
-      ====================================== */}
+      ======================================== */}
 
       <ImageUploader
         multiple={isMultiple}
+        selectedCount={files.length}
+        maxFiles={maxFiles}
         disabled={loading}
-        onFilesSelected={handleFiles}
+        onFilesSelected={
+          handleFiles
+        }
       />
 
-      {/* =====================================
-          FILE INFO
-      ====================================== */}
+      {/* ========================================
+          MULTIPLE FILE INFORMATION
+      ======================================== */}
 
-      {files.length > 0 && (
-        <div className="rounded-2xl border bg-background p-5">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="font-medium">
-                {files.length === 1
-                  ? files[0].name
-                  : `${files.length} images selected`}
-              </p>
+      {isMultiple &&
+        files.length > 0 && (
+          <div className="rounded-2xl border bg-background p-5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-medium">
+                  {files.length} image
+                  {files.length === 1
+                    ? ""
+                    : "s"}{" "}
+                  selected
+                </p>
 
-              <p className="mt-1 text-sm text-muted-foreground">
-                {files.length === 1
-                  ? formatBytes(
-                      files[0].size
-                    )
-                  : files
-                      .map(
-                        (file) =>
-                          formatBytes(
-                            file.size
-                          )
-                      )
-                      .join(" • ")}
-              </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Maximum {maxFiles} images
+                  can be used.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={resetTool}
+                disabled={loading}
+                className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Clear Images
+              </button>
             </div>
 
-            <button
-              type="button"
-              onClick={resetTool}
-              disabled={loading}
-              className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
-            >
-              Change Image
-            </button>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {files.map(
+                (file, index) => (
+                  <div
+                    key={`${file.name}-${file.size}-${file.lastModified}`}
+                    className="rounded-lg border bg-muted/20 p-3"
+                  >
+                    <p className="truncate text-sm font-medium">
+                      {index + 1}.{" "}
+                      {file.name}
+                    </p>
+
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {formatBytes(
+                        file.size
+                      )}
+                    </p>
+                  </div>
+                )
+              )}
+            </div>
+
+            {files.length <
+              maxFiles && (
+              <p className="mt-4 text-sm text-muted-foreground">
+                Need more? Click the upload
+                area above to add more images.
+              </p>
+            )}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* =====================================
+      {/* ========================================
+          SINGLE FILE INFO
+      ======================================== */}
+
+      {!isMultiple &&
+        files.length > 0 && (
+          <div className="rounded-2xl border bg-background p-5">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="truncate font-medium">
+                  {files[0].name}
+                </p>
+
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {formatBytes(
+                    files[0].size
+                  )}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={resetTool}
+                disabled={loading}
+                className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Change Image
+              </button>
+            </div>
+          </div>
+        )}
+
+      {/* ========================================
+          MULTIPLE IMAGE REQUIREMENT
+      ======================================== */}
+
+      {toolId ===
+        "image-overlay" &&
+        files.length === 1 && (
+          <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4 text-sm">
+            <strong>Add one more image.</strong>{" "}
+            Overlay requires 2 images.
+          </div>
+        )}
+
+      {toolId ===
+        "image-collage-maker" &&
+        files.length === 1 && (
+          <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4 text-sm">
+            <strong>Add at least one more image.</strong>{" "}
+            Collage requires 2 or more images.
+          </div>
+        )}
+
+      {toolId ===
+        "image-merger" &&
+        files.length === 1 && (
+          <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4 text-sm">
+            <strong>Add at least one more image.</strong>{" "}
+            Merge requires 2 or more images.
+          </div>
+        )}
+
+      {/* ========================================
           CONTROLS
-      ====================================== */}
+      ======================================== */}
 
-     <ImageControls
-  definition={definition}
+      <ImageControls
+        definition={definition}
 
-  quality={settings.quality}
-  setQuality={(value: number) =>
-    updateSetting("quality", value)
-  }
+        quality={settings.quality}
+        setQuality={(value: number) =>
+          updateSetting(
+            "quality",
+            value
+          )
+        }
 
-  width={settings.width}
-  setWidth={(value: number) =>
-    updateSetting("width", value)
-  }
+        width={settings.width}
+        setWidth={(value: number) =>
+          updateSetting(
+            "width",
+            value
+          )
+        }
 
-  height={settings.height}
-  setHeight={(value: number) =>
-    updateSetting("height", value)
-  }
+        height={settings.height}
+        setHeight={(value: number) =>
+          updateSetting(
+            "height",
+            value
+          )
+        }
 
-  percentage={settings.percentage}
-  setPercentage={(value: number) =>
-    updateSetting("percentage", value)
-  }
+        percentage={
+          settings.percentage
+        }
+        setPercentage={(value: number) =>
+          updateSetting(
+            "percentage",
+            value
+          )
+        }
 
-  rotate={settings.rotate}
-  setRotate={(value: number) =>
-    updateSetting("rotate", value)
-  }
+        rotate={settings.rotate}
+        setRotate={(value: number) =>
+          updateSetting(
+            "rotate",
+            value
+          )
+        }
 
-  flip={settings.flip}
-  setFlip={(
-    value: "horizontal" | "vertical"
-  ) => updateSetting("flip", value)}
+        flip={settings.flip}
+        setFlip={(
+          value:
+            | "horizontal"
+            | "vertical"
+        ) =>
+          updateSetting(
+            "flip",
+            value
+          )
+        }
 
-  effectValue={settings.effectValue}
-  setEffectValue={(value: number) =>
-    updateSetting(
-      "effectValue",
-      value
-    )
-  }
+        effectValue={
+          settings.effectValue
+        }
+        setEffectValue={(value: number) =>
+          updateSetting(
+            "effectValue",
+            value
+          )
+        }
 
-  brightness={settings.brightness}
-  setBrightness={(value: number) =>
-    updateSetting(
-      "brightness",
-      value
-    )
-  }
+        brightness={
+          settings.brightness
+        }
+        setBrightness={(value: number) =>
+          updateSetting(
+            "brightness",
+            value
+          )
+        }
 
-  contrast={settings.contrast}
-  setContrast={(value: number) =>
-    updateSetting(
-      "contrast",
-      value
-    )
-  }
+        contrast={
+          settings.contrast
+        }
+        setContrast={(value: number) =>
+          updateSetting(
+            "contrast",
+            value
+          )
+        }
 
-  saturation={settings.saturation}
-  setSaturation={(value: number) =>
-    updateSetting(
-      "saturation",
-      value
-    )
-  }
+        saturation={
+          settings.saturation
+        }
+        setSaturation={(value: number) =>
+          updateSetting(
+            "saturation",
+            value
+          )
+        }
 
-  hue={settings.hue}
-  setHue={(value: number) =>
-    updateSetting("hue", value)
-  }
+        hue={settings.hue}
+        setHue={(value: number) =>
+          updateSetting(
+            "hue",
+            value
+          )
+        }
 
-  exposure={settings.exposure}
-  setExposure={(value: number) =>
-    updateSetting(
-      "exposure",
-      value
-    )
-  }
+        exposure={
+          settings.exposure
+        }
+        setExposure={(value: number) =>
+          updateSetting(
+            "exposure",
+            value
+          )
+        }
 
-  opacity={settings.opacity}
-  setOpacity={(value: number) =>
-    updateSetting(
-      "opacity",
-      value
-    )
-  }
+        opacity={
+          settings.opacity
+        }
+        setOpacity={(value: number) =>
+          updateSetting(
+            "opacity",
+            value
+          )
+        }
 
-  borderSize={settings.borderSize}
-  setBorderSize={(value: number) =>
-    updateSetting(
-      "borderSize",
-      value
-    )
-  }
+        borderSize={
+          settings.borderSize
+        }
+        setBorderSize={(value: number) =>
+          updateSetting(
+            "borderSize",
+            value
+          )
+        }
 
-  borderColor={settings.borderColor}
-  setBorderColor={(value: string) =>
-    updateSetting(
-      "borderColor",
-      value
-    )
-  }
+        borderColor={
+          settings.borderColor
+        }
+        setBorderColor={(value: string) =>
+          updateSetting(
+            "borderColor",
+            value
+          )
+        }
 
-  radius={settings.radius}
-  setRadius={(value: number) =>
-    updateSetting("radius", value)
-  }
+        radius={settings.radius}
+        setRadius={(value: number) =>
+          updateSetting(
+            "radius",
+            value
+          )
+        }
 
-  text={settings.text}
-  setText={(value: string) =>
-    updateSetting("text", value)
-  }
+        text={settings.text}
+        setText={(value: string) =>
+          updateSetting(
+            "text",
+            value
+          )
+        }
 
-  textSize={settings.textSize}
-  setTextSize={(value: number) =>
-    updateSetting(
-      "textSize",
-      value
-    )
-  }
+        textSize={
+          settings.textSize
+        }
+        setTextSize={(value: number) =>
+          updateSetting(
+            "textSize",
+            value
+          )
+        }
 
-  textColor={settings.textColor}
-  setTextColor={(value: string) =>
-    updateSetting(
-      "textColor",
-      value
-    )
-  }
+        textColor={
+          settings.textColor
+        }
+        setTextColor={(value: string) =>
+          updateSetting(
+            "textColor",
+            value
+          )
+        }
 
-  watermarkOpacity={
-    settings.watermarkOpacity
-  }
-  setWatermarkOpacity={(value: number) =>
-    updateSetting(
-      "watermarkOpacity",
-      value
-    )
-  }
+        watermarkOpacity={
+          settings.watermarkOpacity
+        }
+        setWatermarkOpacity={(
+          value: number
+        ) =>
+          updateSetting(
+            "watermarkOpacity",
+            value
+          )
+        }
 
-  cropX={settings.cropX}
-  setCropX={(value: number) =>
-    updateSetting("cropX", value)
-  }
+        cropX={settings.cropX}
+        setCropX={(value: number) =>
+          updateSetting(
+            "cropX",
+            value
+          )
+        }
 
-  cropY={settings.cropY}
-  setCropY={(value: number) =>
-    updateSetting("cropY", value)
-  }
+        cropY={settings.cropY}
+        setCropY={(value: number) =>
+          updateSetting(
+            "cropY",
+            value
+          )
+        }
 
-  cropWidth={settings.cropWidth}
-  setCropWidth={(value: number) =>
-    updateSetting(
-      "cropWidth",
-      value
-    )
-  }
+        cropWidth={
+          settings.cropWidth
+        }
+        setCropWidth={(value: number) =>
+          updateSetting(
+            "cropWidth",
+            value
+          )
+        }
 
-  cropHeight={settings.cropHeight}
-  setCropHeight={(value: number) =>
-    updateSetting(
-      "cropHeight",
-      value
-    )
-  }
+        cropHeight={
+          settings.cropHeight
+        }
+        setCropHeight={(value: number) =>
+          updateSetting(
+            "cropHeight",
+            value
+          )
+        }
 
-  onProcess={processTool}
-  loading={loading}
-/>
-      {/* =====================================
+        onProcess={
+          processTool
+        }
+
+        loading={loading}
+      />
+
+      {/* ========================================
           ERROR
-      ====================================== */}
+      ======================================== */}
 
       {error && (
         <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
@@ -1561,32 +2100,35 @@ async function handlePreviewClick(
         </div>
       )}
 
-      {/* =====================================
-          COLOR PICKER RESULT
-      ====================================== */}
+      {/* ========================================
+          COLOR PICKER
+      ======================================== */}
 
       {toolId ===
         "image-color-picker" &&
         originalPreview && (
-          <div className="rounded-2xl border bg-background p-6">
-            <p className="mb-3 text-sm font-medium">
-              Click anywhere on the image
-              to pick a color.
+          <section className="rounded-2xl border bg-background p-6">
+            <p className="mb-4 text-sm font-medium">
+              Click anywhere on the image to
+              pick a color.
             </p>
 
-            <Image
-              src={originalPreview}
-              alt="Color picker"
-              onClick={
-                handlePreviewClick
-              }
-              className="max-h-[600px] w-full cursor-crosshair rounded-xl object-contain"
-            />
+            <div className="overflow-hidden rounded-xl border bg-muted/10">
+              <img
+                src={originalPreview}
+                alt="Color picker image"
+                onClick={
+                  handlePreviewClick
+                }
+                draggable={false}
+                className="block max-h-[650px] w-full cursor-crosshair object-contain"
+              />
+            </div>
 
             {pickedColor && (
-              <div className="mt-5 flex items-center gap-4">
+              <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center">
                 <div
-                  className="h-12 w-12 rounded-lg border"
+                  className="h-16 w-16 rounded-lg border"
                   style={{
                     backgroundColor:
                       pickedColor,
@@ -1598,21 +2140,21 @@ async function handlePreviewClick(
                     Selected color
                   </p>
 
-                  <p className="font-mono font-semibold">
+                  <p className="font-mono text-lg font-semibold">
                     {pickedColor}
                   </p>
                 </div>
               </div>
             )}
-          </div>
+          </section>
         )}
 
-      {/* =====================================
+      {/* ========================================
           DATA URL
-      ====================================== */}
+      ======================================== */}
 
       {dataUrl && (
-        <div className="rounded-2xl border bg-background p-6">
+        <section className="rounded-2xl border bg-background p-6">
           <h3 className="font-semibold">
             Image Data URL
           </h3>
@@ -1623,26 +2165,48 @@ async function handlePreviewClick(
             className="mt-4 min-h-[220px] w-full rounded-xl border bg-muted/30 p-4 font-mono text-xs"
           />
 
-          <button
-            type="button"
-            onClick={() =>
-              navigator.clipboard.writeText(
-                dataUrl
-              )
-            }
-            className="mt-4 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
-          >
-            Copy Data URL
-          </button>
-        </div>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(
+                    dataUrl
+                  );
+
+                  setError("");
+                } catch {
+                  setError(
+                    "Unable to copy Data URL."
+                  );
+                }
+              }}
+              className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+            >
+              Copy Data URL
+            </button>
+
+            {result && (
+              <button
+                type="button"
+                onClick={
+                  downloadResult
+                }
+                className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+              >
+                Download Image
+              </button>
+            )}
+          </div>
+        </section>
       )}
 
-      {/* =====================================
+      {/* ========================================
           METADATA
-      ====================================== */}
+      ======================================== */}
 
       {metadata && (
-        <div className="rounded-2xl border bg-background p-6">
+        <section className="rounded-2xl border bg-background p-6">
           <h3 className="font-semibold">
             Image Metadata
           </h3>
@@ -1663,7 +2227,7 @@ async function handlePreviewClick(
                       </td>
 
                       <td className="px-3 py-3 text-muted-foreground">
-                        {String(
+                        {formatMetadataValue(
                           value
                         )}
                       </td>
@@ -1673,111 +2237,209 @@ async function handlePreviewClick(
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
       )}
 
-      {/* =====================================
-          IMAGE PREVIEW
-      ====================================== */}
+      {/* ========================================
+          NORMAL IMAGE PREVIEW
+      ======================================== */}
 
-     {files.length > 0 &&
-        toolId !== "image-color-picker" &&
-        toolId !== "image-metadata-viewer" &&
-        toolId !== "image-to-data-url" && (
+      {files.length > 0 &&
+        toolId !==
+          "image-color-picker" &&
+        toolId !==
+          "image-metadata-viewer" && (
           <ImagePreview
-            originalPreview={originalPreview}
-            resultPreview={resultPreview}
-            originalName={files[0]?.name}
-            originalSize={files[0]?.size}
-            resultSize={result?.size}
+            originalPreview={
+              originalPreview
+            }
+            resultPreview={
+              resultPreview
+            }
+            originalName={
+              files[0]?.name
+            }
+            originalSize={
+              files[0]?.size
+            }
+            resultSize={
+              result?.size
+            }
             result={result}
             loading={loading}
-            onDownload={downloadResult}
-            onReset={resetTool}
+            onDownload={
+              downloadResult
+            }
+            onReset={
+              resetTool
+            }
           />
         )}
 
-
-      {/* =====================================
+      {/* ========================================
           SPLIT RESULTS
-      ====================================== */}
+      ======================================== */}
 
       {toolId ===
         "image-splitter" &&
-        resultFiles.length > 1 && (
-          <div className="rounded-2xl border bg-background p-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h3 className="font-semibold">
-                  Split Images
-                </h3>
+        resultFiles.length > 0 && (
+          <SplitResults
+            files={resultFiles}
+            onDownload={(
+              blob,
+              index
+            ) => {
+              const extension =
+                getOutputExtension(
+                  blob.type
+                );
 
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {resultFiles.length} images
-                  generated
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={
-                  downloadAllResults
-                }
-                className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
-              >
-                Download All
-              </button>
-            </div>
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {resultFiles.map(
-                (blob, index) => {
-                  const url =
-                    URL.createObjectURL(
-                      blob
-                    );
-
-                  return (
-                    <div
-                      key={index}
-                      className="overflow-hidden rounded-xl border"
-                    >
-                      <Image
-                        src={url}
-                        alt={`Split ${index + 1}`}
-                        className="aspect-square w-full object-contain bg-muted/20"
-                        onLoad={() =>
-                          URL.revokeObjectURL(
-                            url
-                          )
-                        }
-                      />
-
-                      <div className="p-3">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            downloadBlob(
-                              blob,
-                              `workabhi-split-${
-                                index + 1
-                              }.${getOutputExtension(
-                                blob.type
-                              )}`
-                            )
-                          }
-                          className="w-full rounded-lg border px-3 py-2 text-sm font-medium hover:bg-muted"
-                        >
-                          Download
-                        </button>
-                      </div>
-                    </div>
-                  );
-                }
-              )}
-            </div>
-          </div>
+              downloadBlob(
+                blob,
+                `workabhi-image-splitter-${index + 1}.${extension}`
+              );
+            }}
+            onDownloadAll={
+              downloadAllResults
+            }
+          />
         )}
     </div>
+  );
+}
+
+function formatMetadataValue(
+  value: unknown
+): string {
+  if (value === null) {
+    return "null";
+  }
+
+  if (value === undefined) {
+    return "—";
+  }
+
+  if (
+    typeof value === "object"
+  ) {
+    try {
+      return JSON.stringify(
+        value
+      );
+    } catch {
+      return String(value);
+    }
+  }
+
+  return String(value);
+}
+
+/**
+ * ==========================================
+ * SPLIT RESULTS
+ * ==========================================
+ */
+
+function SplitResults({
+  files,
+  onDownload,
+  onDownloadAll,
+}: {
+  files: Blob[];
+
+  onDownload: (
+    blob: Blob,
+    index: number
+  ) => void;
+
+  onDownloadAll: () => void;
+}) {
+  const urls = useMemo(
+    () =>
+      files.map((file) =>
+        URL.createObjectURL(
+          file
+        )
+      ),
+    [files]
+  );
+
+  useEffect(() => {
+    return () => {
+      urls.forEach((url) =>
+        URL.revokeObjectURL(
+          url
+        )
+      );
+    };
+  }, [urls]);
+
+  if (!files.length) {
+    return null;
+  }
+
+  return (
+    <section className="rounded-2xl border bg-background p-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-lg font-semibold">
+            Split Images
+          </h3>
+
+          <p className="mt-1 text-sm text-muted-foreground">
+            {files.length} images generated.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={
+            onDownloadAll
+          }
+          className="rounded-xl border px-4 py-2.5 text-sm font-semibold hover:bg-muted"
+        >
+          Download All
+        </button>
+      </div>
+
+      <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        {files.map(
+          (file, index) => (
+            <div
+              key={`${file.size}-${file.type}-${index}`}
+              className="overflow-hidden rounded-xl border"
+            >
+              <div className="flex aspect-square items-center justify-center bg-muted/20 p-3">
+                <img
+                  src={urls[index]}
+                  alt={`Split image ${index + 1}`}
+                  draggable={false}
+                  className="max-h-full max-w-full object-contain"
+                />
+              </div>
+
+              <div className="p-3">
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Part {index + 1}
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    onDownload(
+                      file,
+                      index
+                    )
+                  }
+                  className="w-full rounded-lg border px-3 py-2 text-sm font-semibold hover:bg-muted"
+                >
+                  Download
+                </button>
+              </div>
+            </div>
+          )
+        )}
+      </div>
+    </section>
   );
 }

@@ -2,96 +2,125 @@
 
 interface ImageUploaderProps {
   multiple?: boolean;
-  onFilesSelected: (
-    files: File[]
-  ) => void;
+  selectedCount?: number;
+  maxFiles?: number;
+  onFilesSelected: (files: File[]) => void;
   disabled?: boolean;
 }
 
 export default function ImageUploader({
   multiple = false,
+  selectedCount = 0,
+  maxFiles = 1,
   onFilesSelected,
   disabled = false,
 }: ImageUploaderProps) {
   function handleChange(
     event: React.ChangeEvent<HTMLInputElement>
   ) {
-    const files = event.target.files;
+    const files =
+      event.target.files;
 
     if (!files) {
       return;
     }
 
     const selectedFiles =
-      Array.from(files).filter((file) =>
-        file.type.startsWith("image/")
+      Array.from(files).filter(
+        (file) =>
+          file.type.startsWith(
+            "image/"
+          )
       );
 
-    onFilesSelected(selectedFiles);
+    if (!selectedFiles.length) {
+      event.target.value = "";
+      return;
+    }
+
+    const availableSlots =
+      multiple
+        ? Math.max(
+            0,
+            maxFiles - selectedCount
+          )
+        : 1;
+
+    const filesToAdd =
+      selectedFiles.slice(
+        0,
+        availableSlots
+      );
+
+    if (filesToAdd.length > 0) {
+      onFilesSelected(
+        filesToAdd
+      );
+    }
 
     event.target.value = "";
   }
+
+  const canAddMore =
+    !multiple ||
+    selectedCount < maxFiles;
 
   return (
     <section className="rounded-2xl border bg-background p-6">
       <label
         htmlFor="image-upload"
-        className={[
-          "flex min-h-[240px] cursor-pointer",
-          "flex-col items-center justify-center",
-          "rounded-xl border-2 border-dashed",
-          "px-6 py-10 text-center",
-          "transition-colors",
-          "hover:bg-muted/40",
-          disabled
-            ? "pointer-events-none opacity-50"
-            : "",
-        ].join(" ")}
+        className={`flex min-h-[220px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 text-center transition ${
+          disabled || !canAddMore
+            ? "cursor-not-allowed opacity-60"
+            : "hover:bg-muted/40"
+        }`}
       >
-        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-muted">
-          <svg
-            width="26"
-            height="26"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M12 3v12" />
-            <path d="m7 8 5-5 5 5" />
-            <path d="M5 15v3a3 3 0 0 0 3 3h8a3 3 0 0 0 3-3v-3" />
-          </svg>
+        <div className="mb-4 text-4xl">
+          🖼️
         </div>
 
         <h3 className="text-lg font-semibold">
-          Upload Image
+          {multiple &&
+          selectedCount > 0
+            ? "Add More Images"
+            : "Upload Image"}
         </h3>
 
         <p className="mt-2 max-w-md text-sm text-muted-foreground">
           {multiple
-            ? "Select one or more images from your device."
-            : "Select an image from your device."}
+            ? `Select up to ${
+                maxFiles -
+                selectedCount
+              } more image${
+                maxFiles -
+                  selectedCount ===
+                1
+                  ? ""
+                  : "s"
+              }.`
+            : "Choose an image from your device."}
         </p>
 
-        <span className="mt-5 rounded-lg bg-foreground px-5 py-2.5 text-sm font-medium text-background">
-          Choose {multiple ? "Images" : "Image"}
-        </span>
-
-        <p className="mt-4 text-xs text-muted-foreground">
-          JPG, PNG, WEBP, GIF and other browser-supported
-          image formats
-        </p>
+        {multiple &&
+          selectedCount > 0 && (
+            <p className="mt-3 text-sm font-medium">
+              {selectedCount} /{" "}
+              {maxFiles} selected
+            </p>
+          )}
 
         <input
           id="image-upload"
           type="file"
           accept="image/*"
           multiple={multiple}
-          disabled={disabled}
-          onChange={handleChange}
+          disabled={
+            disabled ||
+            !canAddMore
+          }
+          onChange={
+            handleChange
+          }
           className="sr-only"
         />
       </label>
