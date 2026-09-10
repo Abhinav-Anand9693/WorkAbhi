@@ -126,6 +126,66 @@ function calculatorTool(
   };
 }
 
+function developerTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "developer",
+    description,
+    icon: "Code2",
+    type: "developer",
+    engine: "developer",
+    available: true,
+    popular,
+
+    seo: {
+      title:
+        `${name} - Free Online Developer Tool | WorkAbhi`,
+
+      description:
+        `${description} Use WorkAbhi's free browser-based ${name.toLowerCase()}.`,
+
+      keywords: [
+        name.toLowerCase(),
+        "developer tools",
+        "online developer tool",
+        "free developer tools",
+        "WorkAbhi",
+      ],
+
+      intro:
+        `${description} WorkAbhi processes supported developer tasks directly in your browser.`,
+
+      howToUse: [
+        "Open the developer tool.",
+        "Enter or paste your input.",
+        "Process the input.",
+        "Review the result.",
+        "Copy or download the result.",
+      ],
+
+      faq: [
+        {
+          question:
+            `Is ${name} free?`,
+          answer:
+            "Yes. WorkAbhi provides this developer tool for free.",
+        },
+        {
+          question:
+            "Is my data uploaded to a server?",
+          answer:
+            "Supported developer processing is designed to run locally in your browser.",
+        },
+      ],
+    },
+  };
+}
 /* ==========================================
    ALL WORKABHI TOOLS
 ========================================== */
@@ -591,6 +651,222 @@ export const tools: Tool[] = [
     "Image to Data URL",
     "Convert images to a Data URL."
   ),
+  developerTool(
+  "json-formatter",
+  "JSON Formatter",
+  "Format and indent JSON data for easier reading.",
+  true
+),
+
+developerTool(
+  "json-validator",
+  "JSON Validator",
+  "Validate JSON syntax and identify invalid JSON.",
+  true
+),
+
+developerTool(
+  "json-minifier",
+  "JSON Minifier",
+  "Remove unnecessary whitespace from JSON.",
+),
+
+developerTool(
+  "json-beautifier",
+  "JSON Beautifier",
+  "Beautify JSON with readable indentation.",
+),
+
+developerTool(
+  "json-to-csv",
+  "JSON to CSV",
+  "Convert JSON arrays of objects into CSV.",
+),
+
+developerTool(
+  "csv-to-json",
+  "CSV to JSON",
+  "Convert CSV data into JSON objects.",
+),
+
+developerTool(
+  "xml-formatter",
+  "XML Formatter",
+  "Format XML with readable indentation.",
+),
+
+developerTool(
+  "xml-validator",
+  "XML Validator",
+  "Validate XML syntax directly in your browser.",
+),
+
+developerTool(
+  "xml-minifier",
+  "XML Minifier",
+  "Minify XML by removing unnecessary whitespace.",
+),
+
+developerTool(
+  "yaml-formatter",
+  "YAML Formatter",
+  "Format and normalize YAML documents.",
+),
+
+developerTool(
+  "yaml-to-json",
+  "YAML to JSON",
+  "Convert YAML data into formatted JSON.",
+),
+
+developerTool(
+  "json-to-yaml",
+  "JSON to YAML",
+  "Convert JSON data into YAML.",
+),
+
+developerTool(
+  "html-formatter",
+  "HTML Formatter",
+  "Format HTML with readable indentation.",
+),
+
+developerTool(
+  "html-minifier",
+  "HTML Minifier",
+  "Minify HTML by removing unnecessary whitespace.",
+),
+
+developerTool(
+  "css-formatter",
+  "CSS Formatter",
+  "Format CSS into readable structured code.",
+),
+
+developerTool(
+  "css-minifier",
+  "CSS Minifier",
+  "Minify CSS by removing unnecessary whitespace.",
+),
+
+developerTool(
+  "javascript-formatter",
+  "JavaScript Formatter",
+  "Format JavaScript code with consistent styling.",
+  true
+),
+
+developerTool(
+  "javascript-minifier",
+  "JavaScript Minifier",
+  "Minify JavaScript by reducing unnecessary whitespace.",
+),
+
+developerTool(
+  "sql-formatter",
+  "SQL Formatter",
+  "Format SQL queries for easier reading.",
+  true
+),
+
+developerTool(
+  "sql-minifier",
+  "SQL Minifier",
+  "Minify SQL queries by removing unnecessary whitespace.",
+),
+
+developerTool(
+  "markdown-previewer",
+  "Markdown Previewer",
+  "Preview Markdown as rendered HTML.",
+),
+
+developerTool(
+  "markdown-to-html",
+  "Markdown to HTML",
+  "Convert Markdown into HTML.",
+),
+
+developerTool(
+  "html-to-markdown",
+  "HTML to Markdown",
+  "Convert HTML content into Markdown.",
+),
+
+developerTool(
+  "url-encoder",
+  "URL Encoder",
+  "Encode text for safe use inside URLs.",
+),
+
+developerTool(
+  "url-decoder",
+  "URL Decoder",
+  "Decode URL-encoded text.",
+),
+
+developerTool(
+  "base64-encoder",
+  "Base64 Encoder",
+  "Encode text into Base64.",
+),
+
+developerTool(
+  "base64-decoder",
+  "Base64 Decoder",
+  "Decode Base64 text.",
+),
+
+developerTool(
+  "jwt-decoder",
+  "JWT Decoder",
+  "Decode JWT header and payload locally.",
+  true
+),
+
+developerTool(
+  "jwt-generator",
+  "JWT Generator",
+  "Generate HS256 JSON Web Tokens using a local secret.",
+),
+
+developerTool(
+  "uuid-generator",
+  "UUID Generator",
+  "Generate a random UUID in your browser.",
+  true
+),
+
+developerTool(
+  "uuid-validator",
+  "UUID Validator",
+  "Validate UUID format.",
+),
+
+developerTool(
+  "regex-tester",
+  "Regex Tester",
+  "Test regular expressions against text.",
+  true
+),
+
+developerTool(
+  "regex-generator",
+  "Regex Generator",
+  "Generate common regular expressions from useful patterns.",
+),
+
+developerTool(
+  "timestamp-converter",
+  "Timestamp Converter",
+  "Convert Unix timestamps and date/time values.",
+),
+
+developerTool(
+  "unix-timestamp-generator",
+  "Unix Timestamp Generator",
+  "Generate the current Unix timestamp.",
+),
 ];
 
 /* ==========================================

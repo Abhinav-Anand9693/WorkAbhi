@@ -4,6 +4,7 @@ export type ToolType =
   | "file"
   | "image"
   | "pdf"
+  | "developer"
   | "code"
   | "generator"
   | "audio"

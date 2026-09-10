@@ -3,6 +3,7 @@
 import type { Tool } from "@/types/tool";
 import CalculatorTool from "@/components/calculator/CalculatorTool";
 import ImageTool from "@/components/image/ImageTool";
+import DeveloperTool from "@/components/developer/DeveloperTool";
 
 interface ToolRunnerProps {
   tool: Tool;
@@ -17,6 +18,13 @@ export default function ToolRunner({
 
     case "image":
       return <ImageTool toolId={tool.id} />;
+
+      case "developer":
+  return (
+    <DeveloperTool
+      toolId={tool.id}
+    />
+  );
 
     default:
       return (
