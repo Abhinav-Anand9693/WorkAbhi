@@ -185,7 +185,69 @@ function developerTool(
       ],
     },
   };
+  
 }
+
+function qrTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "qr",
+    description,
+    icon: "QrCode",
+    type: "qr",
+    engine: "qr",
+    available: true,
+    popular,
+
+    seo: {
+      title:
+        `${name} - Free Online QR Code Generator | WorkAbhi`,
+
+      description:
+        `${description} Use WorkAbhi's free online ${name.toLowerCase()}.`,
+
+      keywords: [
+        name.toLowerCase(),
+        "free qr code generator",
+        "online qr code",
+        "WorkAbhi",
+      ],
+
+      intro:
+        `${description} WorkAbhi provides a fast, browser-based QR code generator with no signup required.`,
+
+      howToUse: [
+        "Enter the text or URL for the QR code.",
+        "Review the inputs.",
+        "Click Generate.",
+        "Download or share the generated QR code.",
+      ],
+
+      faq: [
+        {
+          question:
+            `Is the ${name} free?`,
+          answer:
+            "Yes. WorkAbhi provides this QR code generator for free.",
+        },
+
+        {
+          question:
+            `Do I need an account to use the ${name}?`,
+          answer:
+            "No. The QR code generator can be used without creating an account.",
+        },
+      ],
+    },
+  };
+}
+
 /* ==========================================
    ALL WORKABHI TOOLS
 ========================================== */
@@ -867,6 +929,103 @@ developerTool(
   "Unix Timestamp Generator",
   "Generate the current Unix timestamp.",
 ),
+
+qrTool(
+  "qr-code-generator",
+  "QR Code Generator",
+  "Generate QR codes for URLs, text, and more.",
+  true
+),
+
+qrTool(
+  "qr-code-scanner",
+  "QR Code Scanner",
+  "Scan QR codes from images and files.",
+  true
+),
+
+qrTool(
+  "barcode-generator",
+  "Barcode Generator",
+  "Generate barcodes in various formats.",
+  true
+),  
+
+qrTool(
+ "url-qr-generator",
+  "URL QR Generator",
+  "Generate QR codes for URLs.",
+),
+qrTool(
+  "text-qr-generator",
+  "Text QR Generator",
+  "Generate QR codes for text.",
+),
+qrTool(
+  "wifi-qr-generator",
+  "WiFi QR Generator",  
+  "Generate QR codes for WiFi credentials.",
+),
+qrTool("email-qr-generator",
+  "Email QR Generator",
+  "Generate QR codes for email addresses.",
+),
+qrTool("phone-qr-generator",
+  "Phone QR Generator",
+  "Generate QR codes for phone numbers.",
+),
+qrTool("sms-qr-generator",
+  "SMS QR Generator",
+  "Generate QR codes for SMS messages.",
+),
+qrTool("vcard-qr-generator",
+  "vCard QR Generator",
+  "Generate QR codes for vCard contact information.",
+),
+qrTool("location-qr-generator",
+  "Location QR Generator",
+  "Generate QR codes for geographic locations.",
+),
+qrTool("whatsapp-qr-generator",
+  "WhatsApp QR Generator",
+  "Generate QR codes for WhatsApp messages.",
+),
+
+qrTool("bitcoin-qr-generator",
+  "Bitcoin QR Generator",
+  "Generate QR codes for Bitcoin addresses.", 
+),
+qrTool("ethereum-qr-generator",
+  "Ethereum QR Generator",
+  "Generate QR codes for Ethereum addresses.",  
+),
+qrTool("upi-qr-generator",
+  "UPI QR Generator",
+  "Generate QR codes for UPI payments.",
+),
+qrTool("event-qr-generator",
+  "Event QR Generator",
+  "Generate QR codes for calendar events.",
+),
+
+qrTool("calendar-qr-generator",
+  "Calendar QR Generator",
+  "Generate QR codes for calendar events.",
+
+),
+qrTool("ean-13-generator",
+  "EAN-13 Generator",
+  "Generate EAN-13 barcodes.",
+),
+qrTool("code-128-generator",
+  "Code 128 Generator",
+  "Generate Code 128 barcodes.", 
+),
+qrTool("upc-generator",
+  "UPC Generator",
+  "Generate UPC barcodes.",
+),
+
 ];
 
 /* ==========================================

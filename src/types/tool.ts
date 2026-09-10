@@ -5,6 +5,7 @@ export type ToolType =
   | "image"
   | "pdf"
   | "developer"
+  | "qr"
   | "code"
   | "generator"
   | "audio"
