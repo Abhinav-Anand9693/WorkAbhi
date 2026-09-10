@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 
 import ImageUploader from "./ImageUploader";
 import ImagePreview from "./ImagePreview";
 import ImageControls from "./ImageController";
+import SplitResults from "./SplitResults";
 
 import {
   compressImage,
@@ -583,7 +584,19 @@ export default function ImageTool({
 
   const [loading, setLoading] =
     useState(false);
+    
+    const [processingStage, setProcessingStage] =
+  useState<
+    | "idle"
+    | "reading"
+    | "optimizing-resolution"
+    | "compressing"
+    | "finalizing"
+    | "complete"
+  >("idle");
 
+const abortControllerRef =
+  useRef<AbortController | null>(null);
   const [error, setError] =
     useState("");
 
@@ -635,6 +648,14 @@ export default function ImageTool({
       </div>
     );
   }
+  function cancelProcessing() {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setLoading(false);
+    setProcessingStage("idle");
+    setError("Processing cancelled.");
+  }
+
 
   function updateSetting<
     K extends keyof ProcessingSettings
@@ -803,9 +824,15 @@ export default function ImageTool({
 
       return;
     }
+     const controller =
+      new AbortController();
+
+    abortControllerRef.current =
+      controller;
 
     setLoading(true);
     setError("");
+    setProcessingStage("reading");
 
     setDataUrl("");
     setMetadata(null);
@@ -872,34 +899,31 @@ export default function ImageTool({
               1024,
           };
 
-        output =
-          await compressToTargetSize(
-            primaryFile,
-            {
-              targetKB:
-                targetMap[toolId],
-
-              outputType:
-                "image/jpeg",
-            }
-          );
+                output = await compressToTargetSize(
+          primaryFile,
+          {
+            targetKB: targetMap[toolId],
+            outputType: "image/jpeg",
+            signal: controller.signal,
+            onProgress: setProcessingStage,
+          }
+        );
       }
 
       else if (
         toolId ===
         "jpg-compressor"
       ) {
-        output =
-          await compressImage(
-            primaryFile,
-            {
-              quality:
-                settings.quality / 100,
-
-              outputType:
-                "image/jpeg",
-            }
-          );
+        output = await compressImage(
+  primaryFile,
+  {
+    quality:
+      settings.quality / 100,
+    outputType: "image/jpeg",
+    signal: controller.signal,
+    onProgress: setProcessingStage,
+  }
+);
       }
 
       else if (
@@ -922,15 +946,14 @@ export default function ImageTool({
         toolId ===
         "webp-compressor"
       ) {
-        output =
-          await compressImage(
+                output = await compressImage(
             primaryFile,
             {
               quality:
                 settings.quality / 100,
-
-              outputType:
-                "image/webp",
+              outputType: "image/webp",
+              signal: controller.signal,
+              onProgress: setProcessingStage,
             }
           );
       }
@@ -1493,6 +1516,10 @@ export default function ImageTool({
         );
       }
 
+      if (controller.signal.aborted) {
+        throw new DOMException("Processing cancelled.", "AbortError");
+      }
+
       if (!output) {
         throw new Error(
           "No result was generated."
@@ -1522,10 +1549,15 @@ export default function ImageTool({
         previewUrl
       );
     } catch (err) {
-      console.error(
-        "Image processing error:",
-        err
-      );
+      if (
+        err instanceof DOMException &&
+        err.name === "AbortError"
+      ) {
+        setError("Processing cancelled.");
+        return;
+      }
+
+      console.error(err);
 
       setError(
         err instanceof Error
@@ -1533,7 +1565,9 @@ export default function ImageTool({
           : "Something went wrong while processing the image."
       );
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
+      setProcessingStage("idle");
     }
   }
 
@@ -2083,12 +2117,45 @@ export default function ImageTool({
           )
         }
 
-        onProcess={
-          processTool
-        }
-
-        loading={loading}
+        onProcess={processTool}
       />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={processTool}
+          disabled={loading || !files.length}
+          className="rounded-xl bg-primary px-6 py-3 font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {loading ? "Processing..." : "Process Image"}
+        </button>
+
+        {loading && (
+          <button
+            type="button"
+            onClick={cancelProcessing}
+            className="rounded-xl border border-destructive/30 px-6 py-3 font-medium text-destructive hover:bg-destructive/5"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+
+      {loading && (
+        <div className="mt-5 rounded-xl border bg-muted/20 p-4">
+          <p className="text-sm font-medium">
+            {processingStage === "reading" && "Reading image..."}
+            {processingStage === "optimizing-resolution" && "Optimizing resolution..."}
+            {processingStage === "compressing" && "Finding optimal quality..."}
+            {processingStage === "finalizing" && "Finalizing result..."}
+          </p>
+
+          <p className="mt-1 text-xs text-muted-foreground">
+            Your image is being processed locally in your browser.
+          </p>
+        </div>
+      )}
+      
 
       {/* ========================================
           ERROR
@@ -2280,28 +2347,17 @@ export default function ImageTool({
           SPLIT RESULTS
       ======================================== */}
 
-      {toolId ===
-        "image-splitter" &&
-        resultFiles.length > 0 && (
+      {toolId === "image-splitter" &&
+        resultFiles.length > 1 && (
           <SplitResults
             files={resultFiles}
-            onDownload={(
-              blob,
-              index
-            ) => {
-              const extension =
-                getOutputExtension(
-                  blob.type
-                );
-
+            onDownload={(blob, index) =>
               downloadBlob(
                 blob,
-                `workabhi-image-splitter-${index + 1}.${extension}`
-              );
-            }}
-            onDownloadAll={
-              downloadAllResults
+                `workabhi-split-${index + 1}.${getOutputExtension(blob.type)}`
+              )
             }
+            onDownloadAll={downloadAllResults}
           />
         )}
     </div>
@@ -2332,114 +2388,4 @@ function formatMetadataValue(
   }
 
   return String(value);
-}
-
-/**
- * ==========================================
- * SPLIT RESULTS
- * ==========================================
- */
-
-function SplitResults({
-  files,
-  onDownload,
-  onDownloadAll,
-}: {
-  files: Blob[];
-
-  onDownload: (
-    blob: Blob,
-    index: number
-  ) => void;
-
-  onDownloadAll: () => void;
-}) {
-  const urls = useMemo(
-    () =>
-      files.map((file) =>
-        URL.createObjectURL(
-          file
-        )
-      ),
-    [files]
-  );
-
-  useEffect(() => {
-    return () => {
-      urls.forEach((url) =>
-        URL.revokeObjectURL(
-          url
-        )
-      );
-    };
-  }, [urls]);
-
-  if (!files.length) {
-    return null;
-  }
-
-  return (
-    <section className="rounded-2xl border bg-background p-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h3 className="text-lg font-semibold">
-            Split Images
-          </h3>
-
-          <p className="mt-1 text-sm text-muted-foreground">
-            {files.length} images generated.
-          </p>
-        </div>
-
-        <button
-          type="button"
-          onClick={
-            onDownloadAll
-          }
-          className="rounded-xl border px-4 py-2.5 text-sm font-semibold hover:bg-muted"
-        >
-          Download All
-        </button>
-      </div>
-
-      <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-        {files.map(
-          (file, index) => (
-            <div
-              key={`${file.size}-${file.type}-${index}`}
-              className="overflow-hidden rounded-xl border"
-            >
-              <div className="flex aspect-square items-center justify-center bg-muted/20 p-3">
-                <img
-                  src={urls[index]}
-                  alt={`Split image ${index + 1}`}
-                  draggable={false}
-                  className="max-h-full max-w-full object-contain"
-                />
-              </div>
-
-              <div className="p-3">
-                <p className="mb-3 text-xs text-muted-foreground">
-                  Part {index + 1}
-                </p>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    onDownload(
-                      file,
-                      index
-                    )
-                  }
-                  className="w-full rounded-lg border px-3 py-2 text-sm font-semibold hover:bg-muted"
-                >
-                  Download
-                </button>
-              </div>
-            </div>
-          )
-        )}
-      </div>
-    </section>
-  );
 }
