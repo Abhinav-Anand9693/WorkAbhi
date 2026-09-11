@@ -307,6 +307,65 @@ function qrTool(
   };
 }
 
+function textTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "text",
+    description,
+    icon: "Type",
+    type: "text",
+    engine: "text",
+    available: true,
+    popular,
+
+    seo: {
+      title:
+        `${name} - Free Online Text Tool | WorkAbhi`,
+
+      description:
+        `${description} Use WorkAbhi's free browser-based text tool.`,
+
+      keywords: [
+        name.toLowerCase(),
+        "text tool",
+        "free text tool",
+        "online text tool",
+        "WorkAbhi",
+      ],
+
+      intro:
+        `${description} WorkAbhi processes your text directly in your browser.`,
+
+      howToUse: [
+        `Open the ${name}.`,
+        "Enter or paste your text.",
+        "Process the text.",
+        "Copy the result.",
+      ],
+
+      faq: [
+        {
+          question: `Is ${name} free?`,
+          answer:
+            "Yes. WorkAbhi provides this text tool for free.",
+        },
+        {
+          question:
+            "Is my text uploaded to a server?",
+          answer:
+            "This tool is designed to process text directly in your browser.",
+        },
+      ],
+    },
+  };
+}
+
 /* ==========================================
    ALL WORKABHI TOOLS
 ========================================== */
@@ -1210,6 +1269,195 @@ colorTool(
   "color-tints-generator",
   "Color Tints Generator",
   "Generate lighter tints from a selected color."
+),
+
+/* ==========================================
+   TEXT TOOLS — 30
+========================================== */
+
+textTool(
+  "word-counter",
+  "Word Counter",
+  "Count words, characters, sentences and paragraphs in text.",
+  true
+),
+
+textTool(
+  "character-counter",
+  "Character Counter",
+  "Count characters in your text instantly.",
+  true
+),
+
+textTool(
+  "sentence-counter",
+  "Sentence Counter",
+  "Count the number of sentences in your text."
+),
+
+textTool(
+  "paragraph-counter",
+  "Paragraph Counter",
+  "Count paragraphs in your text."
+),
+
+textTool(
+  "reading-time-calculator",
+  "Reading Time Calculator",
+  "Estimate how long it takes to read your text.",
+  true
+),
+
+textTool(
+  "text-case-converter",
+  "Text Case Converter",
+  "Convert text between different capitalization styles."
+),
+
+textTool(
+  "uppercase-converter",
+  "Uppercase Converter",
+  "Convert text to uppercase."
+),
+
+textTool(
+  "lowercase-converter",
+  "Lowercase Converter",
+  "Convert text to lowercase."
+),
+
+textTool(
+  "title-case-converter",
+  "Title Case Converter",
+  "Convert text to title case."
+),
+
+textTool(
+  "sentence-case-converter",
+  "Sentence Case Converter",
+  "Convert text to sentence case."
+),
+
+textTool(
+  "toggle-case-converter",
+  "Toggle Case Converter",
+  "Toggle uppercase and lowercase characters."
+),
+
+textTool(
+  "remove-extra-spaces",
+  "Remove Extra Spaces",
+  "Remove unnecessary spaces from text."
+),
+
+textTool(
+  "remove-duplicate-lines",
+  "Remove Duplicate Lines",
+  "Remove repeated lines from text."
+),
+
+textTool(
+  "sort-lines-alphabetically",
+  "Sort Lines Alphabetically",
+  "Sort text lines alphabetically."
+),
+
+textTool(
+  "reverse-text",
+  "Reverse Text",
+  "Reverse all characters in your text."
+),
+
+textTool(
+  "reverse-words",
+  "Reverse Words",
+  "Reverse the order of words in your text."
+),
+
+textTool(
+  "remove-line-breaks",
+  "Remove Line Breaks",
+  "Remove line breaks and combine text into paragraphs."
+),
+
+textTool(
+  "add-line-breaks",
+  "Add Line Breaks",
+  "Add line breaks between sentences."
+),
+
+textTool(
+  "text-repeater",
+  "Text Repeater",
+  "Repeat text multiple times.",
+  true
+),
+
+textTool(
+  "text-cleaner",
+  "Text Cleaner",
+  "Clean unwanted spaces and formatting from text."
+),
+
+textTool(
+  "find-replace-text",
+  "Find & Replace Text",
+  "Find and replace text instantly."
+),
+
+textTool(
+  "text-difference-checker",
+  "Text Difference Checker",
+  "Compare two text versions and find differences."
+),
+
+textTool(
+  "text-length-calculator",
+  "Text Length Calculator",
+  "Calculate the length of text including characters, words and lines."
+),
+
+textTool(
+  "lorem-ipsum-generator",
+  "Lorem Ipsum Generator",
+  "Generate placeholder Lorem Ipsum text.",
+  true
+),
+
+textTool(
+  "random-text-generator",
+  "Random Text Generator",
+  "Generate random text for testing and design."
+),
+
+textTool(
+  "text-to-binary",
+  "Text to Binary",
+  "Convert text into binary representation."
+),
+
+textTool(
+  "binary-to-text",
+  "Binary to Text",
+  "Convert binary data back into text."
+),
+
+textTool(
+  "text-to-ascii",
+  "Text to ASCII",
+  "Convert text characters into ASCII codes."
+),
+
+textTool(
+  "ascii-to-text",
+  "ASCII to Text",
+  "Convert ASCII codes into readable text."
+),
+
+textTool(
+  "text-to-morse-code",
+  "Text to Morse Code",
+  "Convert text into Morse code."
 ),
 ];
 
