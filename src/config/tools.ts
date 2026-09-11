@@ -126,6 +126,65 @@ function calculatorTool(
   };
 }
 
+function colorTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "color",
+    description,
+    icon: "Palette",
+    type: "color",
+    engine: "color",
+    available: true,
+    popular,
+
+    seo: {
+      title: `${name} - Free Color & Design Tool | WorkAbhi`,
+
+      description:
+        `${description} Use WorkAbhi's free browser-based color and design tool.`,
+
+      keywords: [
+        name.toLowerCase(),
+        "color tool",
+        "design tool",
+        "css tool",
+        "free color tool",
+        "WorkAbhi",
+      ],
+
+      intro:
+        `${description} WorkAbhi processes this tool directly in your browser.`,
+
+      howToUse: [
+        `Open the ${name}.`,
+        "Enter or select the required values.",
+        "Generate or convert the result.",
+        "Copy the generated result.",
+      ],
+
+      faq: [
+        {
+          question: `Is ${name} free?`,
+          answer:
+            "Yes. WorkAbhi provides this tool for free.",
+        },
+        {
+          question:
+            "Does this tool process my data on a server?",
+          answer:
+            "The tool is designed to process supported operations directly in your browser.",
+        },
+      ],
+    },
+  };
+}
+
 function developerTool(
   id: string,
   name: string,
@@ -1026,6 +1085,132 @@ qrTool("upc-generator",
   "Generate UPC barcodes.",
 ),
 
+/* ==========================================
+   COLOR & DESIGN TOOLS — 20
+========================================== */
+
+colorTool(
+  "color-picker",
+  "Color Picker",
+  "Pick a color and get its HEX value.",
+  true
+),
+
+colorTool(
+  "hex-to-rgb",
+  "HEX to RGB",
+  "Convert HEX colors to RGB values."
+),
+
+colorTool(
+  "rgb-to-hex",
+  "RGB to HEX",
+  "Convert RGB values to HEX colors."
+),
+
+colorTool(
+  "rgb-to-hsl",
+  "RGB to HSL",
+  "Convert RGB colors to HSL values."
+),
+
+colorTool(
+  "hsl-to-rgb",
+  "HSL to RGB",
+  "Convert HSL colors to RGB values."
+),
+
+colorTool(
+  "hex-to-hsl",
+  "HEX to HSL",
+  "Convert HEX colors to HSL values."
+),
+
+colorTool(
+  "hsl-to-hex",
+  "HSL to HEX",
+  "Convert HSL colors to HEX values."
+),
+
+colorTool(
+  "rgb-to-cmyk",
+  "RGB to CMYK",
+  "Convert RGB colors to CMYK values."
+),
+
+colorTool(
+  "cmyk-to-rgb",
+  "CMYK to RGB",
+  "Convert CMYK colors to RGB values."
+),
+
+colorTool(
+  "css-border-radius-generator",
+  "CSS Border Radius Generator",
+  "Generate CSS border-radius styles visually."
+),
+
+colorTool(
+  "css-gradient-generator",
+  "CSS Gradient Generator",
+  "Generate CSS linear gradients with a live preview."
+),
+
+colorTool(
+  "gradient-generator",
+  "Gradient Generator",
+  "Create beautiful CSS gradients directly in your browser."
+),
+
+colorTool(
+  "css-box-shadow-generator",
+  "CSS Box Shadow Generator",
+  "Generate CSS box-shadow code with a live preview."
+),
+
+colorTool(
+  "css-button-generator",
+  "CSS Button Generator",
+  "Create customizable CSS buttons and copy the generated code."
+),
+
+colorTool(
+  "color-palette-generator",
+  "Color Palette Generator",
+  "Generate a useful color palette from a base color.",
+  true
+),
+
+colorTool(
+  "contrast-checker",
+  "Contrast Checker",
+  "Check foreground and background color contrast for accessibility.",
+  true
+),
+
+colorTool(
+  "hex-to-cmyk",
+  "HEX to CMYK",
+  "Convert HEX colors to CMYK values."
+),
+
+colorTool(
+  "cmyk-to-hex",
+  "CMYK to HEX",
+  "Convert CMYK values to HEX colors."
+),
+
+colorTool(
+  "color-shades-generator",
+  "Color Shades Generator",
+  "Generate darker shades from a selected color."
+),
+
+colorTool(
+  "color-tints-generator",
+  "Color Tints Generator",
+  "Generate lighter tints from a selected color."
+),
 ];
 
 /* ==========================================

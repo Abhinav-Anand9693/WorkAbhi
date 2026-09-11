@@ -5,6 +5,7 @@ import CalculatorTool from "@/components/calculator/CalculatorTool";
 import ImageTool from "@/components/image/ImageTool";
 import DeveloperTool from "@/components/developer/DeveloperTool";
 import QRTool from "@/components/qr/QRTool";
+import ColorTool from "@/components/color/ColorTool";
 
 interface ToolRunnerProps {
   tool: Tool;
@@ -25,9 +26,10 @@ export default function ToolRunner({
       
      case "qr":
       return <QRTool toolId={tool.id}
-       />
-    
-    ;
+       />;
+
+    case "color":
+      return <ColorTool toolId={tool.id} />;
 
     default:
       return (
