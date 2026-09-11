@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { searchTools } from "@/lib/toolSearch";
 import ToolGrid from "./ToolGrid";
 
+
 export default function ToolSearch() {
   const [
     query,
@@ -23,7 +24,7 @@ export default function ToolSearch() {
         onChange={(event) =>
           setQuery(event.target.value)
         }
-        placeholder="Search 481 tools..."
+        placeholder={`Search ${results.length} tools...`}
         aria-label="Search WorkAbhi tools"
         className="
           w-full rounded-2xl
