@@ -65,6 +65,67 @@ function imageTool(
     },
   };
 }
+function videoTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "video",
+    description,
+    icon: "Video",
+    type: "video",
+    engine: "video",
+    available: true,
+    popular,
+
+    seo: {
+      title:
+        `${name} - Free Online Video Tool | WorkAbhi`,
+
+      description:
+        `${description} Process your video directly in your browser with WorkAbhi.`,
+
+      keywords: [
+        name.toLowerCase(),
+        "video tool",
+        "online video tool",
+        "free video editor",
+        "browser video editor",
+        "WorkAbhi",
+      ],
+
+      intro:
+        `${description} WorkAbhi processes supported video operations directly in your browser.`,
+
+      howToUse: [
+        `Open the ${name}.`,
+        "Select your video.",
+        "Choose the required settings.",
+        "Process the video.",
+        "Download your result.",
+      ],
+
+      faq: [
+        {
+          question:
+            `Is ${name} free?`,
+          answer:
+            "Yes. WorkAbhi provides this tool for free.",
+        },
+        {
+          question:
+            "Are my videos uploaded to a server?",
+          answer:
+            "The video processing is designed to happen locally in your browser using WebAssembly.",
+        },
+      ],
+    },
+  };
+}
 
 function calculatorTool(
   id: string,
@@ -1458,6 +1519,132 @@ textTool(
   "text-to-morse-code",
   "Text to Morse Code",
   "Convert text into Morse code."
+),
+/* ==========================================
+   VIDEO TOOLS — 20
+========================================== */
+
+videoTool(
+  "video-trimmer",
+  "Video Trimmer",
+  "Trim a video by selecting a start and end time.",
+  true
+),
+
+videoTool(
+  "video-cutter",
+  "Video Cutter",
+  "Cut a specific section from a video."
+),
+
+videoTool(
+  "video-merger",
+  "Video Merger",
+  "Merge multiple videos into one video.",
+  true
+),
+
+videoTool(
+  "video-compressor",
+  "Video Compressor",
+  "Compress video files and reduce their file size.",
+  true
+),
+
+videoTool(
+  "video-resizer",
+  "Video Resizer",
+  "Resize videos while preserving their aspect ratio."
+),
+
+videoTool(
+  "video-cropper",
+  "Video Cropper",
+  "Crop unwanted areas from a video."
+),
+
+videoTool(
+  "video-rotator",
+  "Video Rotator",
+  "Rotate videos by 90, 180 or 270 degrees."
+),
+
+videoTool(
+  "video-flipper",
+  "Video Flipper",
+  "Flip videos horizontally or vertically."
+),
+
+videoTool(
+  "video-speed-changer",
+  "Video Speed Changer",
+  "Speed up or slow down a video."
+),
+
+videoTool(
+  "video-volume-booster",
+  "Video Volume Booster",
+  "Increase or decrease the audio volume of a video."
+),
+
+videoTool(
+  "mute-video",
+  "Mute Video",
+  "Remove audio from a video."
+),
+
+videoTool(
+  "extract-audio-from-video",
+  "Extract Audio from Video",
+  "Extract the audio track from a video as an MP3 file."
+),
+
+videoTool(
+  "video-to-gif",
+  "Video to GIF",
+  "Convert a video into an animated GIF."
+),
+
+videoTool(
+  "gif-to-video",
+  "GIF to Video",
+  "Convert an animated GIF into an MP4 video."
+),
+
+videoTool(
+  "mp4-to-webm",
+  "MP4 to WebM",
+  "Convert MP4 videos into WebM format."
+),
+
+videoTool(
+  "webm-to-mp4",
+  "WebM to MP4",
+  "Convert WebM videos into MP4 format."
+),
+
+videoTool(
+  "video-frame-extractor",
+  "Video Frame Extractor",
+  "Extract a single frame from a video."
+),
+
+videoTool(
+  "video-thumbnail-generator",
+  "Video Thumbnail Generator",
+  "Generate a thumbnail image from a video."
+),
+
+videoTool(
+  "video-metadata-viewer",
+  "Video Metadata Viewer",
+  "View video format, codec, dimensions, duration and other metadata."
+),
+
+videoTool(
+  "video-to-images",
+  "Video to Images",
+  "Extract multiple frames from a video as images."
 ),
 ];
 
