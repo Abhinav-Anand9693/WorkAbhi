@@ -4,6 +4,7 @@ export type ToolType =
   | "file"
   | "image"
   | "pdf"
+  | "color"
   | "developer"
   | "qr"
   | "code"
