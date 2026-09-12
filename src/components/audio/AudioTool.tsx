@@ -3,7 +3,7 @@
 import {
   useEffect,
   useRef,
-  useState,t
+  useState,
 } from "react";
 
 import {
@@ -12,178 +12,163 @@ import {
   processAudio,
   type AudioMetadata,
   type AudioOutput,
+  type AudioProcessOptions,
 } from "@/engine/audio/audioEngine";
 
 interface AudioToolProps {
   toolId: string;
 }
 
-function formatTime(
-  seconds: number
-): string {
-  if (
-    !Number.isFinite(seconds)
-  ) {
+type AudioFormat = "mp3" | "wav" | "ogg" | "m4a";
+
+function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds)) {
     return "0:00";
   }
 
-  const total =
-    Math.max(
-      0,
-      Math.floor(seconds)
-    );
+  const total = Math.max(0, Math.floor(seconds));
 
-  const minutes =
-    Math.floor(
-      total / 60
-    );
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
 
-  const secs =
-    total % 60;
-
-  return `${minutes}:${String(
-    secs
-  ).padStart(2, "0")}`;
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
 }
 
 export default function AudioTool({
   toolId,
 }: AudioToolProps) {
-  const isMerge =
-    toolId ===
-    "audio-merger";
+  const isMerge = toolId === "audio-merger";
 
   const isMetadata =
-    toolId ===
-    "audio-metadata-viewer";
+    toolId === "audio-metadata-viewer";
 
   const isTrim =
-    toolId ===
-      "audio-trimmer" ||
-    toolId ===
-      "audio-cutter";
+    toolId === "audio-trimmer" ||
+    toolId === "audio-cutter";
 
   const isConverter =
-    toolId ===
-      "audio-converter" ||
-    toolId ===
-      "mp3-converter" ||
-    toolId ===
-      "wav-converter" ||
-    toolId ===
-      "ogg-converter" ||
-    toolId ===
-      "m4a-converter" ||
-    toolId ===
-      "mp3-to-wav" ||
-    toolId ===
-      "wav-to-mp3" ||
-    toolId ===
-      "mp3-to-ogg" ||
-    toolId ===
-      "ogg-to-mp3";
+    toolId === "audio-converter" ||
+    toolId === "mp3-converter" ||
+    toolId === "wav-converter" ||
+    toolId === "ogg-converter" ||
+    toolId === "m4a-converter" ||
+    toolId === "mp3-to-wav" ||
+    toolId === "wav-to-mp3" ||
+    toolId === "mp3-to-ogg" ||
+    toolId === "ogg-to-mp3";
 
-  const [files, setFiles] =
-    useState<File[]>([]);
+  const isVolumeBooster =
+    toolId === "audio-volume-booster";
 
-  const [start, setStart] =
-    useState("0");
+  const isFade =
+    toolId === "audio-fade-in" ||
+    toolId === "audio-fade-out";
 
-  const [end, setEnd] =
-    useState("");
+  const isSpeedChanger =
+    toolId === "audio-speed-changer";
+
+  const isPitchChanger =
+    toolId === "audio-pitch-changer";
+
+  const [files, setFiles] = useState<File[]>([]);
+
+  const [start, setStart] = useState("0");
+  const [end, setEnd] = useState("");
 
   const [format, setFormat] =
-    useState<
-      "mp3" | "wav" | "ogg" | "m4a"
-    >("mp3");
+    useState<AudioFormat>("mp3");
 
   const [bitrate, setBitrate] =
-    useState("192k");
+    useState<AudioProcessOptions["bitrate"]>("192k");
 
-  const [volume, setVolume] =
-    useState("2");
+  const [volume, setVolume] = useState("2");
 
   const [fadeDuration, setFadeDuration] =
     useState("3");
 
-  const [speed, setSpeed] =
-    useState("1");
+  const [speed, setSpeed] = useState("1");
 
-  const [pitch, setPitch] =
-    useState("0");
+  const [pitch, setPitch] = useState("0");
 
   const [result, setResult] =
-    useState<AudioOutput | null>(
-      null
-    );
+    useState<AudioOutput | null>(null);
 
   const [metadata, setMetadata] =
-    useState<AudioMetadata | null>(
-      null
-    );
+    useState<AudioMetadata | null>(null);
 
   const [processing, setProcessing] =
     useState(false);
 
-  const [error, setError] =
-    useState("");
+  const [error, setError] = useState("");
 
   const [previewUrl, setPreviewUrl] =
     useState("");
 
+  /*
+   * Object URL reference used only for cleanup.
+   *
+   * IMPORTANT:
+   * string | null is required because the ref
+   * intentionally becomes null after cleanup.
+   */
   const previewUrlRef =
-    useRef("");
+    useRef<string | null>(null);
 
+  /*
+   * Cleanup the current preview URL when the
+   * component is unmounted.
+   */
   useEffect(() => {
     return () => {
-      if (
-        previewUrlRef.current
-      ) {
+      if (previewUrlRef.current) {
         URL.revokeObjectURL(
           previewUrlRef.current
         );
+
+        previewUrlRef.current = null;
       }
     };
   }, []);
 
-  useEffect(() => {
-    if (!result) {
-      setPreviewUrl("");
-      return;
-    }
-
-    const url =
-      URL.createObjectURL(
-        result.blob
+  /*
+   * Revoke the current preview URL and clear
+   * the state.
+   *
+   * This is called before creating a new result.
+   */
+  function clearPreviewUrl() {
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(
+        previewUrlRef.current
       );
 
-    previewUrlRef.current =
-      url;
+      previewUrlRef.current = null;
+    }
+
+    setPreviewUrl("");
+  }
+
+  /*
+   * Create a preview URL for a processed
+   * audio output.
+   */
+  function setResultPreview(
+    output: AudioOutput
+  ) {
+    clearPreviewUrl();
+
+    const url =
+      URL.createObjectURL(output.blob);
+
+    previewUrlRef.current = url;
 
     setPreviewUrl(url);
-
-    return () => {
-      URL.revokeObjectURL(url);
-
-      if (
-        previewUrlRef.current ===
-        url
-      ) {
-        previewUrlRef.current =
-          "";
-      }
-    };
-  }, [result]);
-
-  const selectedFile =
-    files[0] ?? null;
-
-
+  }
 
   async function handleProcess() {
-    if (
-      files.length === 0
-    ) {
+    const selectedFile = files[0];
+
+    if (!selectedFile) {
       setError(
         "Please select an audio file."
       );
@@ -193,70 +178,200 @@ export default function AudioTool({
     setError("");
     setResult(null);
     setMetadata(null);
+
+    /*
+     * Remove the previous generated preview
+     * before starting a new operation.
+     */
+    clearPreviewUrl();
+
     setProcessing(true);
 
     try {
+      /*
+       * Metadata Viewer
+       */
       if (isMetadata) {
         const data =
           await getAudioMetadata(
-            files[0]
+            selectedFile
           );
 
         setMetadata(data);
         return;
       }
 
+      /*
+       * Audio Merger
+       */
       if (isMerge) {
-        const output =
-          await mergeAudio(
-            files
+        if (files.length < 2) {
+          setError(
+            "Please select at least two audio files to merge."
           );
+          return;
+        }
+
+        const output =
+          await mergeAudio(files);
 
         setResult(output);
+        setResultPreview(output);
+
         return;
+      }
+
+      /*
+       * Build processing options.
+       */
+      const options: AudioProcessOptions = {};
+
+      /*
+       * Trim / Cutter
+       */
+      if (isTrim) {
+        const startValue =
+          Number(start);
+
+        if (
+          !Number.isFinite(startValue) ||
+          startValue < 0
+        ) {
+          throw new Error(
+            "Start time must be a valid number greater than or equal to 0."
+          );
+        }
+
+        options.start = startValue;
+
+        if (end.trim() !== "") {
+          const endValue = Number(end);
+
+          if (
+            !Number.isFinite(endValue) ||
+            endValue <= startValue
+          ) {
+            throw new Error(
+              "End time must be greater than the start time."
+            );
+          }
+
+          options.end = endValue;
+        }
+      }
+
+      /*
+       * Converter
+       */
+      if (isConverter) {
+        options.format = format;
+        options.bitrate = bitrate;
+      }
+
+      /*
+       * Volume Booster
+       */
+      if (isVolumeBooster) {
+        const volumeValue =
+          Number(volume);
+
+        if (
+          !Number.isFinite(volumeValue) ||
+          volumeValue <= 0
+        ) {
+          throw new Error(
+            "Volume multiplier must be greater than 0."
+          );
+        }
+
+        options.volume = volumeValue;
+        options.bitrate = bitrate;
+      }
+
+      /*
+       * Fade In / Fade Out
+       */
+      if (isFade) {
+        const fadeValue =
+          Number(fadeDuration);
+
+        if (
+          !Number.isFinite(fadeValue) ||
+          fadeValue <= 0
+        ) {
+          throw new Error(
+            "Fade duration must be greater than 0."
+          );
+        }
+
+        options.fadeDuration = fadeValue;
+        options.bitrate = bitrate;
+      }
+
+      /*
+       * Speed Changer
+       */
+      if (isSpeedChanger) {
+        const speedValue =
+          Number(speed);
+
+        if (
+          !Number.isFinite(speedValue) ||
+          speedValue <= 0
+        ) {
+          throw new Error(
+            "Speed must be greater than 0."
+          );
+        }
+
+        options.speed = speedValue;
+        options.bitrate = bitrate;
+      }
+
+      /*
+       * Pitch Changer
+       */
+      if (isPitchChanger) {
+        const pitchValue =
+          Number(pitch);
+
+        if (
+          !Number.isFinite(pitchValue) ||
+          pitchValue < -12 ||
+          pitchValue > 12
+        ) {
+          throw new Error(
+            "Pitch must be between -12 and +12 semitones."
+          );
+        }
+
+        options.pitch = pitchValue;
+        options.bitrate = bitrate;
+      }
+
+      /*
+       * General audio processing.
+       */
+      if (
+        !isConverter &&
+        !isVolumeBooster &&
+        !isFade &&
+        !isSpeedChanger &&
+        !isPitchChanger &&
+        !isTrim
+      ) {
+        options.bitrate = bitrate;
       }
 
       const output =
         await processAudio(
           toolId,
-          files[0],
-          {
-            start:
-              Number(start),
-
-            end:
-              end === ""
-                ? undefined
-                : Number(end),
-
-            format,
-
-            bitrate:
-              bitrate as
-                | "64k"
-                | "96k"
-                | "128k"
-                | "192k"
-                | "256k"
-                | "320k",
-
-            volume:
-              Number(volume),
-
-            fadeDuration:
-              Number(
-                fadeDuration
-              ),
-
-            speed:
-              Number(speed),
-
-            pitch:
-              Number(pitch),
-          }
+          selectedFile,
+          options
         );
 
       setResult(output);
+      setResultPreview(output);
     } catch (err) {
       setError(
         err instanceof Error
@@ -276,6 +391,12 @@ export default function AudioTool({
         event.target.files ?? []
       );
 
+    /*
+     * Clean the previous generated
+     * preview immediately.
+     */
+    clearPreviewUrl();
+
     setFiles(selected);
     setResult(null);
     setMetadata(null);
@@ -293,26 +414,23 @@ export default function AudioTool({
       );
 
     const anchor =
-      document.createElement(
-        "a"
-      );
+      document.createElement("a");
 
     anchor.href = url;
-    anchor.download =
-      result.filename;
+    anchor.download = result.filename;
 
-    document.body.appendChild(
-      anchor
-    );
+    document.body.appendChild(anchor);
 
     anchor.click();
 
     anchor.remove();
 
-    setTimeout(() => {
-      URL.revokeObjectURL(
-        url
-      );
+    /*
+     * Download URL is independent from
+     * the preview URL.
+     */
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
     }, 1000);
   }
 
@@ -328,9 +446,7 @@ export default function AudioTool({
             type="file"
             accept="audio/*"
             multiple={isMerge}
-            onChange={
-              handleFileChange
-            }
+            onChange={handleFileChange}
             className="sr-only"
           />
 
@@ -342,36 +458,33 @@ export default function AudioTool({
             </div>
 
             <p className="text-sm text-muted-foreground">
-              MP3, WAV, OGG, M4A and
-              other browser-supported
-              audio files
+              MP3, WAV, OGG, M4A and other
+              browser-supported audio files
             </p>
           </div>
         </label>
 
         {files.length > 0 && (
           <div className="mt-4 space-y-2">
-            {files.map(
-              (file) => (
-                <div
-                  key={`${file.name}-${file.size}-${file.lastModified}`}
-                  className="flex items-center justify-between rounded-lg border p-3 text-sm"
-                >
-                  <span className="truncate">
-                    {file.name}
-                  </span>
+            {files.map((file) => (
+              <div
+                key={`${file.name}-${file.size}-${file.lastModified}`}
+                className="flex items-center justify-between rounded-lg border p-3 text-sm"
+              >
+                <span className="truncate">
+                  {file.name}
+                </span>
 
-                  <span className="ml-4 shrink-0 text-muted-foreground">
-                    {(
-                      file.size /
-                      1024 /
-                      1024
-                    ).toFixed(2)}{" "}
-                    MB
-                  </span>
-                </div>
-              )
-            )}
+                <span className="ml-4 shrink-0 text-muted-foreground">
+                  {(
+                    file.size /
+                    1024 /
+                    1024
+                  ).toFixed(2)}{" "}
+                  MB
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -384,6 +497,8 @@ export default function AudioTool({
         !isMetadata && (
           <div className="rounded-2xl border bg-card p-6">
             <div className="grid gap-4 sm:grid-cols-2">
+              {/* TRIM / CUT */}
+
               {isTrim && (
                 <>
                   <label className="space-y-2">
@@ -427,6 +542,8 @@ export default function AudioTool({
                 </>
               )}
 
+              {/* CONVERTER */}
+
               {isConverter && (
                 <label className="space-y-2">
                   <span className="text-sm font-medium">
@@ -437,11 +554,7 @@ export default function AudioTool({
                     value={format}
                     onChange={(e) =>
                       setFormat(
-                        e.target.value as
-                          | "mp3"
-                          | "wav"
-                          | "ogg"
-                          | "m4a"
+                        e.target.value as AudioFormat
                       )
                     }
                     className="w-full rounded-lg border bg-background px-3 py-2"
@@ -449,18 +562,23 @@ export default function AudioTool({
                     <option value="mp3">
                       MP3
                     </option>
+
                     <option value="wav">
                       WAV
                     </option>
+
                     <option value="ogg">
                       OGG
                     </option>
+
                     <option value="m4a">
                       M4A
                     </option>
                   </select>
                 </label>
               )}
+
+              {/* BITRATE */}
 
               {!isMerge && (
                 <label className="space-y-2">
@@ -472,7 +590,7 @@ export default function AudioTool({
                     value={bitrate}
                     onChange={(e) =>
                       setBitrate(
-                        e.target.value
+                        e.target.value as AudioProcessOptions["bitrate"]
                       )
                     }
                     className="w-full rounded-lg border bg-background px-3 py-2"
@@ -480,18 +598,23 @@ export default function AudioTool({
                     <option value="64k">
                       64 kbps
                     </option>
+
                     <option value="96k">
                       96 kbps
                     </option>
+
                     <option value="128k">
                       128 kbps
                     </option>
+
                     <option value="192k">
                       192 kbps
                     </option>
+
                     <option value="256k">
                       256 kbps
                     </option>
+
                     <option value="320k">
                       320 kbps
                     </option>
@@ -499,8 +622,9 @@ export default function AudioTool({
                 </label>
               )}
 
-              {toolId ===
-                "audio-volume-booster" && (
+              {/* VOLUME BOOSTER */}
+
+              {isVolumeBooster && (
                 <label className="space-y-2">
                   <span className="text-sm font-medium">
                     Volume multiplier
@@ -519,13 +643,16 @@ export default function AudioTool({
                     }
                     className="w-full rounded-lg border bg-background px-3 py-2"
                   />
+
+                  <span className="block text-xs text-muted-foreground">
+                    1× = original volume
+                  </span>
                 </label>
               )}
 
-              {(toolId ===
-                "audio-fade-in" ||
-                toolId ===
-                  "audio-fade-out") && (
+              {/* FADE */}
+
+              {isFade && (
                 <label className="space-y-2">
                   <span className="text-sm font-medium">
                     Fade duration
@@ -536,9 +663,7 @@ export default function AudioTool({
                     min="0.1"
                     max="60"
                     step="0.1"
-                    value={
-                      fadeDuration
-                    }
+                    value={fadeDuration}
                     onChange={(e) =>
                       setFadeDuration(
                         e.target.value
@@ -546,11 +671,16 @@ export default function AudioTool({
                     }
                     className="w-full rounded-lg border bg-background px-3 py-2"
                   />
+
+                  <span className="block text-xs text-muted-foreground">
+                    Duration in seconds
+                  </span>
                 </label>
               )}
 
-              {toolId ===
-                "audio-speed-changer" && (
+              {/* SPEED */}
+
+              {isSpeedChanger && (
                 <label className="space-y-2">
                   <span className="text-sm font-medium">
                     Speed
@@ -568,27 +698,35 @@ export default function AudioTool({
                     <option value="0.25">
                       0.25×
                     </option>
+
                     <option value="0.5">
                       0.5×
                     </option>
+
                     <option value="0.75">
                       0.75×
                     </option>
+
                     <option value="1">
                       1×
                     </option>
+
                     <option value="1.25">
                       1.25×
                     </option>
+
                     <option value="1.5">
                       1.5×
                     </option>
+
                     <option value="2">
                       2×
                     </option>
+
                     <option value="3">
                       3×
                     </option>
+
                     <option value="4">
                       4×
                     </option>
@@ -596,8 +734,9 @@ export default function AudioTool({
                 </label>
               )}
 
-              {toolId ===
-                "audio-pitch-changer" && (
+              {/* PITCH */}
+
+              {isPitchChanger && (
                 <label className="space-y-2">
                   <span className="text-sm font-medium">
                     Pitch
@@ -615,21 +754,27 @@ export default function AudioTool({
                     <option value="-12">
                       -12 semitones
                     </option>
+
                     <option value="-6">
                       -6 semitones
                     </option>
+
                     <option value="-3">
                       -3 semitones
                     </option>
+
                     <option value="0">
                       Original
                     </option>
+
                     <option value="3">
                       +3 semitones
                     </option>
+
                     <option value="6">
                       +6 semitones
                     </option>
+
                     <option value="12">
                       +12 semitones
                     </option>
@@ -666,7 +811,10 @@ export default function AudioTool({
       ================================================= */}
 
       {error && (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+        <div
+          role="alert"
+          className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive"
+        >
           {error}
         </div>
       )}
@@ -691,18 +839,20 @@ export default function AudioTool({
             {previewUrl && (
               <audio
                 controls
+                preload="metadata"
                 src={previewUrl}
                 className="w-full"
-              />
+              >
+                Your browser does not support
+                the audio player.
+              </audio>
             )}
 
             <div className="flex flex-col gap-3 sm:flex-row">
               <button
                 type="button"
-                onClick={
-                  downloadResult
-                }
-                className="flex-1 rounded-xl bg-primary px-5 py-3 font-medium text-primary-foreground"
+                onClick={downloadResult}
+                className="flex-1 rounded-xl bg-primary px-5 py-3 font-medium text-primary-foreground transition hover:opacity-90"
               >
                 Download Audio
               </button>
@@ -737,8 +887,7 @@ export default function AudioTool({
                   ?.duration
                   ? formatTime(
                       Number(
-                        metadata
-                          .format
+                        metadata.format
                           .duration
                       )
                     )
@@ -753,15 +902,11 @@ export default function AudioTool({
                   ?.size
                   ? `${(
                       Number(
-                        metadata
-                          .format
-                          .size
+                        metadata.format.size
                       ) /
                       1024 /
                       1024
-                    ).toFixed(
-                      2
-                    )} MB`
+                    ).toFixed(2)} MB`
                   : undefined
               }
             />
@@ -773,8 +918,7 @@ export default function AudioTool({
                   ?.bit_rate
                   ? `${Math.round(
                       Number(
-                        metadata
-                          .format
+                        metadata.format
                           .bit_rate
                       ) / 1000
                     )} kbps`
@@ -789,10 +933,7 @@ export default function AudioTool({
                   "audio"
               )
               .map(
-                (
-                  stream,
-                  index
-                ) => (
+                (stream, index) => (
                   <div
                     key={index}
                     className="contents"
@@ -811,11 +952,8 @@ export default function AudioTool({
                           ? `${(
                               Number(
                                 stream.sample_rate
-                              ) /
-                              1000
-                            ).toFixed(
-                              1
-                            )} kHz`
+                              ) / 1000
+                            ).toFixed(1)} kHz`
                           : undefined
                       }
                     />
@@ -823,8 +961,7 @@ export default function AudioTool({
                     <MetadataRow
                       label="Channels"
                       value={
-                        stream.channels
-                          ?.toString()
+                        stream.channels?.toString()
                       }
                     />
 
@@ -847,8 +984,7 @@ export default function AudioTool({
 
       <p className="text-center text-xs text-muted-foreground">
         Your audio is processed locally in
-        your browser whenever technically
-        supported. Your file does not need
+        your browser. Your file does not need
         to be uploaded to WorkAbhi servers.
       </p>
     </div>
