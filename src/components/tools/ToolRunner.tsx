@@ -7,6 +7,7 @@ import DeveloperTool from "@/components/developer/DeveloperTool";
 import QRTool from "@/components/qr/QRTool";
 import ColorTool from "@/components/color/ColorTool";
 import TextTool from "../text/TextTool";
+import AudioTool from "../audio/AudioTool";
 import VideoTool from "../video/VideoTool";
 
 interface ToolRunnerProps {
@@ -38,6 +39,9 @@ export default function ToolRunner({
 
   case "video":
   return <VideoTool toolId={tool.id} />;
+
+  case "audio":
+  return <AudioTool toolId={tool.id} />;
 
     default:
       return (

@@ -427,6 +427,78 @@ function textTool(
   };
 }
 
+function audioTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "audio",
+    description,
+    icon: "Music",
+    type: "audio",
+    engine: "audio",
+    available: true,
+    popular,
+
+    seo: {
+      title:
+        `${name} - Free Online Audio Tool | WorkAbhi`,
+
+      description:
+        `${description} Use WorkAbhi's free browser-based ${name.toLowerCase()} with local audio processing.`,
+
+      keywords: [
+        name.toLowerCase(),
+        "free audio tool",
+        "online audio tool",
+        "audio converter",
+        "audio editor",
+        "WorkAbhi",
+      ],
+
+      intro:
+        `${description} WorkAbhi provides browser-based audio processing designed to work locally whenever technically possible.`,
+
+      howToUse: [
+        "Upload your audio file.",
+        "Choose the required options.",
+        "Process the audio.",
+        "Preview the result.",
+        "Download the processed audio.",
+      ],
+
+      faq: [
+        {
+          question:
+            `Is ${name} free?`,
+
+          answer:
+            "Yes. WorkAbhi provides this audio tool for free.",
+        },
+
+        {
+          question:
+            "Do I need to create an account?",
+
+          answer:
+            "No. The tool can be used without creating an account.",
+        },
+
+        {
+          question:
+            "Is my audio uploaded to a server?",
+
+          answer:
+            "Supported audio processing is designed to run locally in your browser, so your file does not need to be uploaded to WorkAbhi servers.",
+        },
+      ],
+    },
+  };
+}
 /* ==========================================
    ALL WORKABHI TOOLS
 ========================================== */
@@ -1645,6 +1717,149 @@ videoTool(
   "video-to-images",
   "Video to Images",
   "Extract multiple frames from a video as images."
+),
+/* =========================================================
+   AUDIO TOOLS
+========================================================= */
+
+audioTool(
+  "audio-trimmer",
+  "Audio Trimmer",
+  "Trim an audio file by selecting a start and end time.",
+  true
+),
+
+audioTool(
+  "audio-cutter",
+  "Audio Cutter",
+  "Cut a section from an audio file quickly in your browser.",
+  true
+),
+
+audioTool(
+  "audio-merger",
+  "Audio Merger",
+  "Merge multiple audio files into one audio track.",
+  true
+),
+
+audioTool(
+  "audio-converter",
+  "Audio Converter",
+  "Convert audio files between MP3, WAV, OGG and M4A formats.",
+  true
+),
+
+audioTool(
+  "mp3-converter",
+  "MP3 Converter",
+  "Convert supported audio files to MP3 format.",
+  true
+),
+
+audioTool(
+  "wav-converter",
+  "WAV Converter",
+  "Convert supported audio files to WAV format.",
+  false
+),
+
+audioTool(
+  "ogg-converter",
+  "OGG Converter",
+  "Convert supported audio files to OGG format.",
+  false
+),
+
+audioTool(
+  "m4a-converter",
+  "M4A Converter",
+  "Convert supported audio files to M4A format.",
+  false
+),
+
+audioTool(
+  "mp3-to-wav",
+  "MP3 to WAV",
+  "Convert MP3 audio files to WAV format.",
+  true
+),
+
+audioTool(
+  "wav-to-mp3",
+  "WAV to MP3",
+  "Convert WAV audio files to compressed MP3 format.",
+  true
+),
+
+audioTool(
+  "mp3-to-ogg",
+  "MP3 to OGG",
+  "Convert MP3 audio files to OGG format.",
+  false
+),
+
+audioTool(
+  "ogg-to-mp3",
+  "OGG to MP3",
+  "Convert OGG audio files to MP3 format.",
+  false
+),
+
+audioTool(
+  "audio-compressor",
+  "Audio Compressor",
+  "Reduce audio file size by converting it to a lower bitrate.",
+  true
+),
+
+audioTool(
+  "audio-volume-booster",
+  "Audio Volume Booster",
+  "Increase the volume of an audio file.",
+  true
+),
+
+audioTool(
+  "audio-volume-normalizer",
+  "Audio Volume Normalizer",
+  "Normalize audio loudness for a more consistent listening level.",
+  false
+),
+
+audioTool(
+  "audio-fade-in",
+  "Audio Fade In",
+  "Add a smooth fade-in effect to an audio file.",
+  false
+),
+
+audioTool(
+  "audio-fade-out",
+  "Audio Fade Out",
+  "Add a smooth fade-out effect to an audio file.",
+  false
+),
+
+audioTool(
+  "audio-speed-changer",
+  "Audio Speed Changer",
+  "Change audio playback speed while preserving pitch.",
+  true
+),
+
+audioTool(
+  "audio-pitch-changer",
+  "Audio Pitch Changer",
+  "Raise or lower the pitch of an audio file.",
+  false
+),
+
+audioTool(
+  "audio-metadata-viewer",
+  "Audio Metadata Viewer",
+  "View audio format, codec, duration, bitrate, sample rate and channel information.",
+  false
 ),
 ];
 
