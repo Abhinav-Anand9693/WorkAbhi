@@ -8,92 +8,73 @@ interface VideoImageResultsProps {
   images: ImageOutput[];
 }
 
+interface PreviewImage {
+  filename: string;
+  url: string;
+}
+
 export default function VideoImageResults({
   images,
 }: VideoImageResultsProps) {
-  /*
-   * We initialize URLs when the component mounts.
-   * The parent gives this component a new key whenever
-   * a new extraction result is produced, so we don't
-   * need a setState inside an effect.
-   */
-  const [urls] = useState<string[]>(() =>
-    images.map((image) => URL.createObjectURL(image.blob))
-  );
+  const [previews, setPreviews] = useState<PreviewImage[]>([]);
 
-  /*
-   * Revoke object URLs when this component unmounts.
-   */
   useEffect(() => {
-    return () => {
-      urls.forEach((url) => {
-        URL.revokeObjectURL(url);
-      });
-    };
-  }, [urls]);
+    const next = images.map((image) => ({
+      filename: image.filename,
+      url: URL.createObjectURL(image.blob),
+    }));
 
-  if (images.length === 0) {
+    setPreviews(next);
+
+    return () => {
+      for (const preview of next) {
+        URL.revokeObjectURL(preview.url);
+      }
+    };
+  }, [images]);
+
+  if (previews.length === 0) {
     return null;
   }
 
   return (
     <section className="mt-6 rounded-2xl border bg-background p-5">
-      <div className="mb-5">
-        <h3 className="text-lg font-semibold">
-          Extracted Images
-        </h3>
-
-        <p className="mt-1 text-sm text-muted-foreground">
-          {images.length} image
-          {images.length !== 1 ? "s" : ""} extracted from
-          your video.
-        </p>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-lg font-semibold">Extracted Images</h3>
+          <p className="text-sm text-muted-foreground">
+            {previews.length} frame{previews.length === 1 ? "" : "s"} generated locally.
+          </p>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {images.map((image, index) => {
-          const url = urls[index];
-
-          return (
-            <div
-              key={`${image.filename}-${index}`}
-              className="overflow-hidden rounded-xl border bg-background"
-            >
-              <div className="aspect-video bg-black">
-                {url && (
-                  <img
-                    src={url}
-                    alt={`Extracted frame ${index + 1}`}
-                    className="h-full w-full object-contain"
-                    loading="lazy"
-                  />
-                )}
-              </div>
-
-              <div className="flex items-center justify-between gap-3 border-t p-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">
-                    Frame {index + 1}
-                  </p>
-
-                  <p className="truncate text-xs text-muted-foreground">
-                    {image.filename}
-                  </p>
-                </div>
-
-                {url && (
-                  <a
-                    href={url}
-                    download={image.filename}
-                    className="shrink-0 rounded-lg border px-3 py-1.5 text-sm font-medium transition hover:bg-muted"
-                  >
-                    Download
-                  </a>
-                )}
-              </div>
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {previews.map((preview) => (
+          <div
+            key={preview.filename}
+            className="overflow-hidden rounded-xl border bg-muted/20"
+          >
+            <img
+              src={preview.url}
+              alt={preview.filename}
+              loading="lazy"
+              decoding="async"
+              className="aspect-video w-full object-contain bg-black"
+            />
+            <div className="flex items-center justify-between gap-2 p-3">
+              <span className="truncate text-xs text-muted-foreground">
+                {preview.filename}
+              </span>
+              <a
+                href={preview.url}
+                download={preview.filename}
+                className="shrink-0 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+              >
+                Download
+              </a>
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
     </section>
   );

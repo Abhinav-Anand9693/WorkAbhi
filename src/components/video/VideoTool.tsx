@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -13,6 +14,7 @@ import {
   mergeVideos,
   extractVideoImages,
   getVideoMetadata,
+  cancelVideoProcessing,
 } from "@/engine/video/videoEngine";
 
 import type {
@@ -67,6 +69,12 @@ export default function VideoTool({
 
   const fileInputRef =
     useRef<HTMLInputElement | null>(null);
+
+  const operationControllerRef =
+    useRef<AbortController | null>(null);
+
+  const operationGenerationRef =
+    useRef(0);
 
   /* -------------------------------------------------
    * UI STATE
@@ -259,6 +267,23 @@ export default function VideoTool({
   };
 
   /* -------------------------------------------------
+   * CANCEL ACTIVE PROCESSING
+   * ------------------------------------------------- */
+
+  const cancelCurrentOperation = () => {
+    operationGenerationRef.current += 1;
+
+    operationControllerRef.current?.abort();
+    operationControllerRef.current = null;
+
+    cancelVideoProcessing();
+
+    setLoading(false);
+    setMetadataLoading(false);
+    setProgress(0);
+  };
+
+  /* -------------------------------------------------
    * CLEAR PREVIEW URL
    * ------------------------------------------------- */
 
@@ -293,8 +318,11 @@ export default function VideoTool({
    * ------------------------------------------------- */
 
   const clearFiles = () => {
-    setFiles([]);
+    if (loading || metadataLoading) {
+      cancelCurrentOperation();
+    }
 
+    setFiles([]);
     clearResult();
 
     if (fileInputRef.current) {
@@ -318,8 +346,8 @@ export default function VideoTool({
       return;
     }
 
+    cancelCurrentOperation();
     setFiles(selectedFiles);
-
     clearResult();
   };
 
@@ -385,9 +413,23 @@ export default function VideoTool({
       return;
     }
 
+    const generation = ++operationGenerationRef.current;
+    const controller = new AbortController();
+    operationControllerRef.current = controller;
+
+    const isCurrent = () =>
+      operationGenerationRef.current === generation &&
+      !controller.signal.aborted;
+
+    const onProgress = (value: number) => {
+      if (isCurrent()) {
+        setProgress(Math.max(0, Math.min(100, value)));
+      }
+    };
+
     try {
       setLoading(true);
-      setProgress(10);
+      setProgress(5);
 
       /* ---------------------------------------------
        * MERGE VIDEOS
@@ -407,8 +449,12 @@ export default function VideoTool({
         }
 
         const output =
-          await mergeVideos(files);
+          await mergeVideos(files, {
+            signal: controller.signal,
+            onProgress,
+          });
 
+        if (!isCurrent()) return;
         setProgress(100);
         setVideoResult(output);
 
@@ -449,9 +495,14 @@ export default function VideoTool({
           await extractVideoImages(
             files[0],
             fps,
-            imageCount
+            imageCount,
+            {
+              signal: controller.signal,
+              onProgress,
+            }
           );
 
+        if (!isCurrent()) return;
         setImageResults(images);
         setProgress(100);
 
@@ -472,9 +523,11 @@ export default function VideoTool({
 
         const data =
           await getVideoMetadata(
-            files[0]
+            files[0],
+            { signal: controller.signal }
           );
 
+        if (!isCurrent()) return;
         setMetadata(data);
         setProgress(100);
 
@@ -750,13 +803,28 @@ export default function VideoTool({
         await processVideo(
           toolId,
           files[0],
-          options
+          {
+            ...options,
+            signal: controller.signal,
+            onProgress,
+          }
         );
 
+      if (!isCurrent()) return;
       setProgress(100);
-
       setVideoResult(output);
     } catch (err) {
+      if (!isCurrent()) return;
+
+      const isCancelled =
+        err instanceof DOMException &&
+        err.name === "AbortError";
+
+      if (isCancelled) {
+        setError(null);
+        return;
+      }
+
       console.error(
         "Video processing error:",
         err
@@ -770,14 +838,16 @@ export default function VideoTool({
       setError(message);
 
       revokePreviewUrl();
-
       setResult(null);
       setImageResults([]);
       setMetadata(null);
       setProgress(0);
     } finally {
-      setLoading(false);
-      setMetadataLoading(false);
+      if (operationGenerationRef.current === generation) {
+        operationControllerRef.current = null;
+        setLoading(false);
+        setMetadataLoading(false);
+      }
     }
   };
 
@@ -866,6 +936,24 @@ export default function VideoTool({
   const isGifResult =
     result?.mimeType ===
     "image/gif";
+
+  const isImageResult =
+    result?.mimeType.startsWith("image/") ?? false;
+
+  useEffect(() => {
+    return () => {
+      operationGenerationRef.current += 1;
+      operationControllerRef.current?.abort();
+      operationControllerRef.current = null;
+      cancelVideoProcessing();
+
+      const currentUrl = previewUrlRef.current;
+      if (currentUrl) {
+        URL.revokeObjectURL(currentUrl);
+        previewUrlRef.current = null;
+      }
+    };
+  }, []);
 
   /* -------------------------------------------------
    * RENDER
@@ -1501,15 +1589,13 @@ export default function VideoTool({
           <button
             type="button"
             onClick={
-              clearFiles
+              loading || metadataLoading
+                ? cancelCurrentOperation
+                : clearFiles
             }
-            disabled={
-              loading ||
-              metadataLoading
-            }
-            className="rounded-xl border px-5 py-3 font-semibold transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-xl border px-5 py-3 font-semibold transition hover:bg-muted"
           >
-            Clear
+            {loading || metadataLoading ? "Cancel" : "Clear"}
           </button>
         </div>
 
@@ -1595,6 +1681,18 @@ export default function VideoTool({
               />
             )}
 
+            {/* IMAGE / FRAME / THUMBNAIL */}
+
+            {isImageResult && !isGifResult && (
+              <div className="mt-5 overflow-hidden rounded-xl bg-black">
+                <img
+                  src={previewUrl}
+                  alt={result.filename}
+                  className="mx-auto max-h-[500px] w-full object-contain"
+                />
+              </div>
+            )}
+
             {/* GIF */}
 
             {isGifResult && (
@@ -1612,6 +1710,7 @@ export default function VideoTool({
             {/* VIDEO */}
 
             {!isAudioResult &&
+              !isImageResult &&
               !isGifResult && (
                 <video
                   className="mt-5 max-h-[500px] w-full rounded-xl bg-black"
