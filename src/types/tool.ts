@@ -1,7 +1,7 @@
 export type ToolType =
   | "calculator"
   | "text"
-  | "file"
+  | "file-data"
   | "image"
   | "pdf"
   | "color"

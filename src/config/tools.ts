@@ -499,6 +499,80 @@ function audioTool(
     },
   };
 }
+
+function DataTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "file-data",
+    description,
+    icon: "FileText",
+    type: "file-data",
+    engine: "file-data",
+    available: true,
+    popular,
+
+    seo: {
+      title:
+        `${name} - Free Online File Data Tool | WorkAbhi`,
+
+      description:
+        `${description} Use WorkAbhi's free browser-based ${name.toLowerCase()} with local file processing.`,
+
+      keywords: [
+        name.toLowerCase(),
+        "free file data tool",
+        "online file data tool",
+        "file converter",
+        "file editor",
+        "WorkAbhi",
+      ],
+
+      intro:
+        `${description} WorkAbhi provides browser-based file processing designed to work locally whenever technically possible.`,
+
+      howToUse: [
+        "Upload your file.",
+        "Choose the required options.",
+        "Process the file.",
+        "Preview the result.",
+        "Download the processed file.",
+      ],
+
+      faq: [
+        {
+          question:
+            `Is ${name} free?`,
+
+          answer:
+            "Yes. WorkAbhi provides this file data tool for free.",
+        },
+
+        {
+          question:
+            "Do I need to create an account?",
+
+          answer:
+            "No. The tool can be used without creating an account.",
+        },
+
+        {
+          question:
+            "Is my file uploaded to a server?",
+
+          answer:
+            "Supported file processing is designed to run locally in your browser, so your file does not need to be uploaded to WorkAbhi servers.",
+        },
+      ],
+    },
+  };
+}
+
 /* ==========================================
    ALL WORKABHI TOOLS
 ========================================== */
@@ -1859,6 +1933,171 @@ audioTool(
   "audio-metadata-viewer",
   "Audio Metadata Viewer",
   "View audio format, codec, duration, bitrate, sample rate and channel information.",
+  false
+),
+
+// ============================================================
+// DATA TOOLS
+// ============================================================
+
+DataTool(
+  "csv-viewer",
+  "CSV Viewer",
+  "View and analyze CSV files in your browser.",
+  true
+),
+
+DataTool(
+  "json-viewer",
+  "JSON Viewer",
+  "View and analyze JSON files in your browser.",
+  true
+),
+
+DataTool(
+  "xml-viewer",
+  "XML Viewer",
+  "View and analyze XML files in your browser.",
+  true
+),
+
+DataTool(
+  "yaml-viewer",
+  "YAML Viewer",
+  "View and analyze YAML files in your browser.",
+  true
+),
+
+DataTool(
+  "csv-formatter",
+  "CSV Formatter",
+  "Format and clean CSV data directly in your browser.",
+  false
+),
+
+DataTool(
+  "csv-to-json",
+  "CSV to JSON",
+  "Convert CSV data to JSON directly in your browser.",
+  true
+),
+
+DataTool(
+  "json-to-csv",
+  "JSON to CSV",
+  "Convert JSON data to CSV directly in your browser.",
+  true
+),
+
+DataTool(
+  "csv-to-tsv",
+  "CSV to TSV",
+  "Convert CSV data to TSV format directly in your browser.",
+  false
+),
+
+DataTool(
+  "tsv-to-csv",
+  "TSV to CSV",
+  "Convert TSV data to CSV format directly in your browser.",
+  false
+),
+
+DataTool(
+  "csv-column-extractor",
+  "CSV Column Extractor",
+  "Extract selected columns from a CSV file.",
+  false
+),
+
+DataTool(
+  "csv-row-filter",
+  "CSV Row Filter",
+  "Filter CSV rows based on column values.",
+  false
+),
+
+DataTool(
+  "csv-duplicate-remover",
+  "CSV Duplicate Remover",
+  "Remove duplicate rows from CSV files.",
+  true
+),
+
+DataTool(
+  "csv-sorter",
+  "CSV Sorter",
+  "Sort CSV rows by a selected column.",
+  false
+),
+
+DataTool(
+  "csv-splitter",
+  "CSV Splitter",
+  "Split large CSV files into smaller files by row count.",
+  true
+),
+
+DataTool(
+  "csv-merger",
+  "CSV Merger",
+  "Merge multiple CSV files into one CSV file.",
+  true
+),
+
+DataTool(
+  "json-to-xml",
+  "JSON to XML",
+  "Convert JSON data to XML format directly in your browser.",
+  true
+),
+
+DataTool(
+  "xml-to-json",
+  "XML to JSON",
+  "Convert XML data to JSON format directly in your browser.",
+  true
+),
+
+DataTool(
+  "json-to-yaml",
+  "JSON to YAML",
+  "Convert JSON data to YAML format directly in your browser.",
+  false
+),
+
+DataTool(
+  "yaml-to-json",
+  "YAML to JSON",
+  "Convert YAML data to JSON format directly in your browser.",
+  false
+),
+
+DataTool(
+  "txt-to-csv",
+  "TXT to CSV",
+  "Convert structured text data into CSV format.",
+  false
+),
+
+DataTool(
+  "txt-file-cleaner",
+  "TXT File Cleaner",
+  "Clean text files by removing empty lines and unnecessary whitespace.",
+  false
+),
+
+DataTool(
+  "file-hash-calculator",
+  "File Hash Calculator",
+  "Calculate SHA-256, SHA-384 and SHA-512 file hashes in your browser.",
+  true
+),
+
+DataTool(
+  "file-metadata-viewer",
+  "File Metadata Viewer",
+  "View basic file information such as name, type, size, extension and modified date.",
   false
 ),
 ];

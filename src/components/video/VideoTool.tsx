@@ -15,6 +15,7 @@ import {
   extractVideoImages,
   getVideoMetadata,
   cancelVideoProcessing,
+  VideoProcessingError,
 } from "@/engine/video/videoEngine";
 
 import type {
@@ -70,11 +71,8 @@ export default function VideoTool({
   const fileInputRef =
     useRef<HTMLInputElement | null>(null);
 
-  const operationControllerRef =
-    useRef<AbortController | null>(null);
-
-  const operationGenerationRef =
-    useRef(0);
+  const processingControllerRef = useRef<AbortController | null>(null);
+  const processingGenerationRef = useRef(0);
 
   /* -------------------------------------------------
    * UI STATE
@@ -267,23 +265,6 @@ export default function VideoTool({
   };
 
   /* -------------------------------------------------
-   * CANCEL ACTIVE PROCESSING
-   * ------------------------------------------------- */
-
-  const cancelCurrentOperation = () => {
-    operationGenerationRef.current += 1;
-
-    operationControllerRef.current?.abort();
-    operationControllerRef.current = null;
-
-    cancelVideoProcessing();
-
-    setLoading(false);
-    setMetadataLoading(false);
-    setProgress(0);
-  };
-
-  /* -------------------------------------------------
    * CLEAR PREVIEW URL
    * ------------------------------------------------- */
 
@@ -303,9 +284,17 @@ export default function VideoTool({
    * CLEAR RESULT
    * ------------------------------------------------- */
 
+  const cancelCurrentProcessing = () => {
+    processingGenerationRef.current += 1;
+    processingControllerRef.current?.abort();
+    processingControllerRef.current = null;
+    cancelVideoProcessing();
+    setLoading(false);
+    setMetadataLoading(false);
+  };
+
   const clearResult = () => {
     revokePreviewUrl();
-
     setResult(null);
     setImageResults([]);
     setMetadata(null);
@@ -313,22 +302,26 @@ export default function VideoTool({
     setProgress(0);
   };
 
-  /* -------------------------------------------------
-   * CLEAR FILES
-   * ------------------------------------------------- */
-
   const clearFiles = () => {
-    if (loading || metadataLoading) {
-      cancelCurrentOperation();
-    }
-
+    if (loading || metadataLoading) cancelCurrentProcessing();
     setFiles([]);
     clearResult();
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
+
+  useEffect(() => {
+    return () => {
+      processingGenerationRef.current += 1;
+      processingControllerRef.current?.abort();
+      processingControllerRef.current = null;
+      cancelVideoProcessing();
+      const currentUrl = previewUrlRef.current;
+      if (currentUrl) {
+        URL.revokeObjectURL(currentUrl);
+        previewUrlRef.current = null;
+      }
+    };
+  }, []);
 
   /* -------------------------------------------------
    * FILE SELECTION
@@ -337,17 +330,21 @@ export default function VideoTool({
   const handleFileChange = (
     event: ChangeEvent<HTMLInputElement>
   ) => {
-    const selectedFiles =
-      Array.from(
-        event.target.files ?? []
-      );
+    const selectedFiles = Array.from(event.target.files ?? []);
+    if (selectedFiles.length === 0) return;
 
-    if (selectedFiles.length === 0) {
+    if (loading || metadataLoading) cancelCurrentProcessing();
+
+    const validFiles = selectedFiles.filter(
+      (file) => file instanceof File && file.size > 0
+    );
+
+    if (validFiles.length === 0) {
+      setError("Unable to read this video. Please select a valid video file.");
       return;
     }
 
-    cancelCurrentOperation();
-    setFiles(selectedFiles);
+    setFiles(validFiles);
     clearResult();
   };
 
@@ -406,30 +403,26 @@ export default function VideoTool({
     setProgress(0);
 
     if (files.length === 0) {
-      setError(
-        "Please select a video first."
-      );
-
+      setError("Please select a video first.");
       return;
     }
 
-    const generation = ++operationGenerationRef.current;
+    if (loading || metadataLoading) return;
+
+    const generation = ++processingGenerationRef.current;
     const controller = new AbortController();
-    operationControllerRef.current = controller;
+    processingControllerRef.current = controller;
 
     const isCurrent = () =>
-      operationGenerationRef.current === generation &&
-      !controller.signal.aborted;
+      processingGenerationRef.current === generation && !controller.signal.aborted;
 
-    const onProgress = (value: number) => {
-      if (isCurrent()) {
-        setProgress(Math.max(0, Math.min(100, value)));
-      }
+    const updateProgress = (value: number) => {
+      if (!isCurrent() || !Number.isFinite(value)) return;
+      setProgress(Math.max(0, Math.min(100, Math.round(value * 100))));
     };
-
     try {
       setLoading(true);
-      setProgress(5);
+      setProgress(10);
 
       /* ---------------------------------------------
        * MERGE VIDEOS
@@ -449,12 +442,8 @@ export default function VideoTool({
         }
 
         const output =
-          await mergeVideos(files, {
-            signal: controller.signal,
-            onProgress,
-          });
+          await mergeVideos(files);
 
-        if (!isCurrent()) return;
         setProgress(100);
         setVideoResult(output);
 
@@ -495,14 +484,9 @@ export default function VideoTool({
           await extractVideoImages(
             files[0],
             fps,
-            imageCount,
-            {
-              signal: controller.signal,
-              onProgress,
-            }
+            imageCount
           );
 
-        if (!isCurrent()) return;
         setImageResults(images);
         setProgress(100);
 
@@ -523,11 +507,9 @@ export default function VideoTool({
 
         const data =
           await getVideoMetadata(
-            files[0],
-            { signal: controller.signal }
+            files[0]
           );
 
-        if (!isCurrent()) return;
         setMetadata(data);
         setProgress(100);
 
@@ -538,8 +520,10 @@ export default function VideoTool({
        * GENERIC OPTIONS
        * --------------------------------------------- */
 
-      const options: VideoProcessOptions =
-        {};
+      const options: VideoProcessOptions = {
+        signal: controller.signal,
+        onProgress: updateProgress,
+      };
 
       /* ---------------------------------------------
        * TRIM / CUT
@@ -803,48 +787,47 @@ export default function VideoTool({
         await processVideo(
           toolId,
           files[0],
-          {
-            ...options,
-            signal: controller.signal,
-            onProgress,
-          }
+          options
         );
 
       if (!isCurrent()) return;
+
       setProgress(100);
       setVideoResult(output);
     } catch (err) {
       if (!isCurrent()) return;
 
-      const isCancelled =
-        err instanceof DOMException &&
-        err.name === "AbortError";
-
-      if (isCancelled) {
-        setError(null);
-        return;
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[VideoCompressor] processing error", err);
       }
 
-      console.error(
-        "Video processing error:",
-        err
-      );
+      let message =
+        "Video processing failed on this device. Please try again or use a smaller video.";
 
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Something went wrong while processing the video.";
+      if (err instanceof VideoProcessingError) {
+        message = err.message;
+      } else if (err instanceof Error) {
+        const lower = err.message.toLowerCase();
+        if (lower.includes("memory") || lower.includes("out of bounds")) {
+          message = "This video is too demanding for this device. Try a smaller or lower-resolution video.";
+        } else if (lower.includes("codec") || lower.includes("decoder") || lower.includes("invalid data")) {
+          message = "This video format or codec is not supported by the current video processor.";
+        } else if (lower.includes("load") || lower.includes("wasm")) {
+          message = "Video processor could not be loaded. Please check your connection and try again.";
+        } else if (lower.includes("read") || lower.includes("file")) {
+          message = "Unable to read this video. Please try another file.";
+        }
+      }
 
       setError(message);
-
       revokePreviewUrl();
       setResult(null);
       setImageResults([]);
       setMetadata(null);
       setProgress(0);
     } finally {
-      if (operationGenerationRef.current === generation) {
-        operationControllerRef.current = null;
+      if (processingGenerationRef.current === generation) {
+        processingControllerRef.current = null;
         setLoading(false);
         setMetadataLoading(false);
       }
@@ -937,24 +920,6 @@ export default function VideoTool({
     result?.mimeType ===
     "image/gif";
 
-  const isImageResult =
-    result?.mimeType.startsWith("image/") ?? false;
-
-  useEffect(() => {
-    return () => {
-      operationGenerationRef.current += 1;
-      operationControllerRef.current?.abort();
-      operationControllerRef.current = null;
-      cancelVideoProcessing();
-
-      const currentUrl = previewUrlRef.current;
-      if (currentUrl) {
-        URL.revokeObjectURL(currentUrl);
-        previewUrlRef.current = null;
-      }
-    };
-  }, []);
-
   /* -------------------------------------------------
    * RENDER
    * ------------------------------------------------- */
@@ -981,7 +946,7 @@ export default function VideoTool({
        * FILE PICKER
        * ------------------------------------------- */}
 
-      <div className="rounded-2xl border bg-background p-5">
+      <div className="w-full min-w-0 overflow-hidden rounded-2xl border bg-background p-4 sm:p-5">
         <input
           ref={fileInputRef}
           type="file"
@@ -1037,10 +1002,10 @@ export default function VideoTool({
               ) => (
                 <div
                   key={`${file.name}-${file.size}-${index}`}
-                  className="flex items-center justify-between rounded-lg border px-4 py-3"
+                  className="flex min-w-0 items-center justify-between gap-3 overflow-hidden rounded-lg border px-3 py-3 sm:px-4"
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">
+                    <p className="break-all text-sm font-medium">
                       {file.name}
                     </p>
 
@@ -1066,7 +1031,7 @@ export default function VideoTool({
        * SETTINGS
        * ------------------------------------------- */}
 
-      <div className="mt-5 rounded-2xl border bg-background p-5">
+      <div className="mt-5 w-full min-w-0 overflow-hidden rounded-2xl border bg-background p-4 sm:p-5">
         <h3 className="text-lg font-semibold">
           Settings
         </h3>
@@ -1580,7 +1545,9 @@ export default function VideoTool({
           >
             {loading ||
             metadataLoading
-              ? `Processing ${progress}%`
+              ? progress > 0
+                ? `Processing ${progress}%`
+                : "Preparing..."
               : isMetadataTool
                 ? "Read Metadata"
                 : "Process Video"}
@@ -1589,11 +1556,10 @@ export default function VideoTool({
           <button
             type="button"
             onClick={
-              loading || metadataLoading
-                ? cancelCurrentOperation
-                : clearFiles
+              clearFiles
             }
-            className="rounded-xl border px-5 py-3 font-semibold transition hover:bg-muted"
+            disabled={files.length === 0 && !loading && !metadataLoading}
+            className="rounded-xl border px-5 py-3 font-semibold transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             {loading || metadataLoading ? "Cancel" : "Clear"}
           </button>
@@ -1605,14 +1571,14 @@ export default function VideoTool({
 
         {(loading ||
           metadataLoading) && (
-          <div className="mt-5">
-            <div className="mb-2 flex justify-between text-xs text-muted-foreground">
-              <span>
-                Processing...
+          <div className="mt-5" aria-live="polite">
+            <div className="mb-2 flex justify-between gap-3 text-xs text-muted-foreground">
+              <span className="min-w-0 break-words">
+                {progress > 0 ? "Processing video..." : "Preparing video..."}
               </span>
 
-              <span>
-                {progress}%
+              <span className="shrink-0">
+                {progress > 0 ? `${progress}%` : ""}
               </span>
             </div>
 
@@ -1681,18 +1647,6 @@ export default function VideoTool({
               />
             )}
 
-            {/* IMAGE / FRAME / THUMBNAIL */}
-
-            {isImageResult && !isGifResult && (
-              <div className="mt-5 overflow-hidden rounded-xl bg-black">
-                <img
-                  src={previewUrl}
-                  alt={result.filename}
-                  className="mx-auto max-h-[500px] w-full object-contain"
-                />
-              </div>
-            )}
-
             {/* GIF */}
 
             {isGifResult && (
@@ -1710,7 +1664,6 @@ export default function VideoTool({
             {/* VIDEO */}
 
             {!isAudioResult &&
-              !isImageResult &&
               !isGifResult && (
                 <video
                   className="mt-5 max-h-[500px] w-full rounded-xl bg-black"

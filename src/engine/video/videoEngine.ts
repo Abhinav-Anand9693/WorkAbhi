@@ -32,11 +32,31 @@ export interface VideoProcessOptions {
 
   imageCount?: number;
 
-  /** Optional UI progress callback for long-running operations. */
-  onProgress?: (progress: number) => void;
-
-  /** Abort/cancel the current operation. */
   signal?: AbortSignal;
+  onProgress?: (progress: number) => void;
+}
+
+export type VideoProcessingErrorCode =
+  | "FILE_READ_ERROR"
+  | "UNSUPPORTED_FORMAT"
+  | "UNSUPPORTED_CODEC"
+  | "MEMORY_ERROR"
+  | "FFMPEG_LOAD_ERROR"
+  | "FFMPEG_EXEC_ERROR"
+  | "WORKER_ERROR"
+  | "OUTPUT_ERROR"
+  | "CANCELLED"
+  | "UNKNOWN_ERROR";
+
+export class VideoProcessingError extends Error {
+  readonly code: VideoProcessingErrorCode;
+  readonly technicalMessage?: string;
+  constructor(code: VideoProcessingErrorCode, message: string, technicalMessage?: string) {
+    super(message);
+    this.name = "VideoProcessingError";
+    this.code = code;
+    this.technicalMessage = technicalMessage;
+  }
 }
 
 export interface VideoOutput {
@@ -95,8 +115,8 @@ const MAX_EXTRACTED_FRAMES = 50;
 const EXEC_TIMEOUT =
   10 * 60 * 1000; // 10 minutes
 
-const METADATA_TIMEOUT =
-  15 * 1000; // browser metadata timeout
+const PROBE_TIMEOUT =
+  60 * 1000; // 1 minute
 
 /* =========================================================
    FFmpeg SINGLETON
@@ -114,13 +134,6 @@ let loadingPromise: Promise<FFmpeg> | null = null;
  */
 let operationQueue: Promise<unknown> =
   Promise.resolve();
-
-/* Only one public operation runs at a time, so one shared progress
- * callback is sufficient and avoids wiring a callback through every
- * individual FFmpeg command. */
-let activeProgressCallback: ((progress: number) => void) | null = null;
-let activeAbortController: AbortController | null = null;
-let activeSignal: AbortSignal | undefined;
 
 /* =========================================================
    OPERATION QUEUE
@@ -153,30 +166,16 @@ function runExclusive<T>(
  * After terminate(), FFmpeg must be loaded again.
  */
 export function resetFFmpeg(): void {
-  const current = ffmpegInstance;
-  ffmpegInstance = null;
-  loadingPromise = null;
-
-  if (current) {
+  if (ffmpegInstance) {
     try {
-      current.terminate();
+      ffmpegInstance.terminate();
     } catch {
       // Worker may already be dead.
     }
   }
 
-}
-
-/** Cancel the active video operation and destroy the WASM runtime. */
-export function cancelVideoProcessing(): void {
-  activeAbortController?.abort();
-  resetFFmpeg();
-}
-
-function throwIfAborted(): void {
-  if (activeSignal?.aborted) {
-    throw new DOMException("Video processing was cancelled.", "AbortError");
-  }
+  ffmpegInstance = null;
+  loadingPromise = null;
 }
 
 /* =========================================================
@@ -241,58 +240,36 @@ function createUserError(
    FFmpeg LOADER
 ========================================================= */
 
-async function getFFmpeg(): Promise<FFmpeg> {
-  if (
-    ffmpegInstance &&
-    ffmpegInstance.loaded
-  ) {
-    return ffmpegInstance;
-  }
+async function getFFmpeg(signal?: AbortSignal): Promise<FFmpeg> {
+  throwIfAborted(signal);
+  if (ffmpegInstance?.loaded) return ffmpegInstance;
+  if (loadingPromise) return loadingPromise;
 
-  if (loadingPromise) {
-    return loadingPromise;
-  }
-
-  loadingPromise =
-    (async () => {
-      const {
-        FFmpeg,
-      } = await import(
-        "@ffmpeg/ffmpeg"
+  loadingPromise = (async () => {
+    const { FFmpeg } = await import("@ffmpeg/ffmpeg");
+    const ffmpeg = new FFmpeg();
+    try {
+      await ffmpeg.load(
+        {
+          coreURL: "/ffmpeg/ffmpeg-core.js",
+          wasmURL: "/ffmpeg/ffmpeg-core.wasm",
+        },
+        { signal }
       );
-
-      const ffmpeg =
-        new FFmpeg();
-
-      try {
-        await ffmpeg.load({
-          coreURL:
-            "/ffmpeg/ffmpeg-core.js",
-
-          wasmURL:
-            "/ffmpeg/ffmpeg-core.wasm",
-        });
-
-        ffmpegInstance =
-          ffmpeg;
-
-        return ffmpeg;
-      } catch (error) {
-        try {
-          ffmpeg.terminate();
-        } catch {
-          // Ignore cleanup errors.
-        }
-
-        throw error;
+      throwIfAborted(signal);
+      ffmpegInstance = ffmpeg;
+      return ffmpeg;
+    } catch (error) {
+      try { ffmpeg.terminate(); } catch { /* ignore */ }
+      if (isAbortError(error) || signal?.aborted) {
+        throw new VideoProcessingError("CANCELLED", "Video processing was cancelled.", errorToString(error));
       }
-    })();
+      throw new VideoProcessingError("FFMPEG_LOAD_ERROR", "Video processor could not be loaded. Please check your connection and try again.", errorToString(error));
+    }
+  })();
 
-  try {
-    return await loadingPromise;
-  } finally {
-    loadingPromise = null;
-  }
+  try { return await loadingPromise; }
+  finally { loadingPromise = null; }
 }
 
 /* =========================================================
@@ -342,6 +319,39 @@ function getMimeType(
     case "mp4":
     default:
       return "video/mp4";
+  }
+}
+
+const SUPPORTED_VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "mkv", "m4v", "avi", "3gp"]);
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new VideoProcessingError("CANCELLED", "Video processing was cancelled.");
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+function validateVideoCompressorFile(file: File): void {
+  if (!(file instanceof File)) {
+    throw new VideoProcessingError("FILE_READ_ERROR", "Unable to read this video. Please select a valid video file.");
+  }
+  if (file.size <= 0) {
+    throw new VideoProcessingError("FILE_READ_ERROR", "This video file is empty. Please choose another video.");
+  }
+  if (file.size > MAX_VIDEO_FILE_SIZE) {
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    throw new VideoProcessingError("MEMORY_ERROR", `This video is ${sizeMB} MB. For reliable browser processing, please use a smaller video.`);
+  }
+  const extension = getExtension(file);
+  const mime = file.type.toLowerCase();
+  if (!mime.startsWith("video/") && !SUPPORTED_VIDEO_EXTENSIONS.has(extension)) {
+    throw new VideoProcessingError("UNSUPPORTED_FORMAT", "This video format is not supported. Please use MP4, WebM, MOV, M4V, AVI, MKV or 3GP.");
   }
 }
 
@@ -552,45 +562,50 @@ function atempoFilters(
 async function execFFmpeg(
   ffmpeg: FFmpeg,
   args: string[],
-  timeout = EXEC_TIMEOUT
+  timeout = EXEC_TIMEOUT,
+  signal?: AbortSignal,
+  onProgress?: (progress: number) => void
 ): Promise<void> {
-  throwIfAborted();
-
-  const onProgress = ({ progress }: { progress: number }) => {
-    if (activeProgressCallback) {
-      const percent = Math.round(
-        Math.max(0, Math.min(1, progress)) * 100
-      );
-      activeProgressCallback(percent);
-    }
+  throwIfAborted(signal);
+  let lastLog = "";
+  const handleLog = ({ message }: { message: string }) => { lastLog = message; };
+  const handleProgress = ({ progress }: { progress: number }) => {
+    if (Number.isFinite(progress)) onProgress?.(Math.max(0, Math.min(1, progress)));
   };
-
-  ffmpeg.on("progress", onProgress);
-
+  ffmpeg.on("log", handleLog);
+  if (onProgress) ffmpeg.on("progress", handleProgress);
   try {
-    const code = await ffmpeg.exec(
-      args,
-      timeout,
-      { signal: activeSignal }
-    );
-
-    throwIfAborted();
-
+    const code = await ffmpeg.exec(args, timeout, { signal });
+    throwIfAborted(signal);
     if (code !== 0) {
-      throw createUserError(
-        `FFmpeg processing failed (code ${code}).`
-      );
+      const technical = lastLog || `FFmpeg exited with code ${code}.`;
+      const lower = technical.toLowerCase();
+      if (lower.includes("invalid data found") || lower.includes("could not find codec") || lower.includes("unknown decoder") || lower.includes("unsupported codec")) {
+        throw new VideoProcessingError("UNSUPPORTED_CODEC", "This video format or codec is not supported by the current video processor.", technical);
+      }
+      throw new VideoProcessingError("FFMPEG_EXEC_ERROR", "Video processing failed on this device. Please try again or use a smaller video.", technical);
     }
   } catch (error) {
-    if (activeSignal?.aborted) {
-      throw new DOMException(
-        "Video processing was cancelled.",
-        "AbortError"
-      );
-    }
-    throw error;
+    if (isAbortError(error) || signal?.aborted) throw new VideoProcessingError("CANCELLED", "Video processing was cancelled.", errorToString(error));
+    if (error instanceof VideoProcessingError) throw error;
+    if (isFatalWasmError(error)) throw new VideoProcessingError("MEMORY_ERROR", "This video is too demanding for this device. Try a smaller or lower-resolution video.", errorToString(error));
+    throw new VideoProcessingError("WORKER_ERROR", "The video processor stopped unexpectedly. Please try again.", `${errorToString(error)}${lastLog ? ` | ${lastLog}` : ""}`);
   } finally {
-    ffmpeg.off("progress", onProgress);
+    ffmpeg.off("log", handleLog);
+    if (onProgress) ffmpeg.off("progress", handleProgress);
+  }
+}
+
+async function execFFprobe(ffmpeg: FFmpeg, args: string[], signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  try {
+    const code = await ffmpeg.ffprobe(args, PROBE_TIMEOUT, { signal });
+    throwIfAborted(signal);
+    if (code !== 0) throw new VideoProcessingError("FILE_READ_ERROR", "Unable to read this video. Please try another file.", `FFprobe exited with code ${code}.`);
+  } catch (error) {
+    if (isAbortError(error) || signal?.aborted) throw new VideoProcessingError("CANCELLED", "Video processing was cancelled.", errorToString(error));
+    if (error instanceof VideoProcessingError) throw error;
+    throw new VideoProcessingError("FILE_READ_ERROR", "Unable to read this video. Please try another file.", errorToString(error));
   }
 }
 
@@ -601,58 +616,61 @@ async function execFFmpeg(
 async function writeInput(
   ffmpeg: FFmpeg,
   file: File,
-  name = "input"
+  name = "input",
+  signal?: AbortSignal
 ): Promise<string> {
   validateFile(file);
-
-  const extension =
-    getExtension(file);
-
-  const filename =
-    `${name}.${extension}`;
-
-  const {
-    fetchFile,
-  } = await import(
-    "@ffmpeg/util"
-  );
-
-  const data =
-    await fetchFile(file);
-
-  await ffmpeg.writeFile(
-    filename,
-    data
-  );
-
+  throwIfAborted(signal);
+  const extension = getExtension(file);
+  const filename = `${name}.${extension}`;
+  const { fetchFile } = await import("@ffmpeg/util");
+  const data = await fetchFile(file);
+  throwIfAborted(signal);
+  await ffmpeg.writeFile(filename, data, { signal });
   return filename;
 }
 
-async function readBlob(
-  ffmpeg: FFmpeg,
-  filename: string,
-  mimeType: string
-): Promise<Blob> {
-  const data =
-    (await ffmpeg.readFile(
-      filename
-    )) as Uint8Array;
+interface MountedInput { path: string; directory: string; }
+let mountedInputCounter = 0;
 
-  /*
-   * Create a standalone ArrayBuffer.
-   *
-   * This avoids accidentally retaining a larger
-   * WASM-backed buffer.
-   */
-  const copy =
-    new Uint8Array(data);
+async function mountInputFile(ffmpeg: FFmpeg, file: File, signal?: AbortSignal): Promise<MountedInput> {
+  validateVideoCompressorFile(file);
+  throwIfAborted(signal);
+  const directory = `/workabhi-input-${++mountedInputCounter}`;
+  const extension = getExtension(file);
+  const path = `${directory}/input.${extension}`;
+  await ffmpeg.createDir(directory);
+  try {
+   const workerFsType =
+  "WORKERFS" as unknown as Parameters<typeof ffmpeg.mount>[0];
 
-  return new Blob(
-    [copy.buffer],
-    {
-      type: mimeType,
-    }
-  );
+await ffmpeg.mount(
+  workerFsType,
+  { files: [file] },
+  directory
+);
+    throwIfAborted(signal);
+    return { path, directory };
+  } catch (error) {
+    try { await ffmpeg.unmount(directory); } catch { /* ignore */ }
+    try { await ffmpeg.deleteDir(directory); } catch { /* ignore */ }
+    if (isAbortError(error) || signal?.aborted) throw new VideoProcessingError("CANCELLED", "Video processing was cancelled.", errorToString(error));
+    throw new VideoProcessingError("FILE_READ_ERROR", "Unable to read this video. Please try another file.", errorToString(error));
+  }
+}
+
+async function unmountInputFile(ffmpeg: FFmpeg, directory: string): Promise<void> {
+  try { await ffmpeg.unmount(directory); } catch { /* ignore */ }
+  try { await ffmpeg.deleteDir(directory); } catch { /* ignore */ }
+}
+
+async function readBlob(ffmpeg: FFmpeg, filename: string, mimeType: string, signal?: AbortSignal): Promise<Blob> {
+  throwIfAborted(signal);
+  const data = (await ffmpeg.readFile(filename, "binary", { signal })) as Uint8Array;
+  throwIfAborted(signal);
+  const copy = new Uint8Array(data);
+  if (copy.byteLength === 0) throw new VideoProcessingError("OUTPUT_ERROR", "The processed video was empty. Please try again with another video.");
+  return new Blob([copy.buffer], { type: mimeType });
 }
 
 async function safeDelete(
@@ -684,12 +702,6 @@ async function safeDeleteMany(
    METADATA HELPERS
 ========================================================= */
 
-interface BrowserVideoInfo {
-  duration: number;
-  width: number;
-  height: number;
-}
-
 function getVideoStream(
   metadata: VideoMetadata
 ) {
@@ -700,156 +712,94 @@ function getVideoStream(
   );
 }
 
-async function getBrowserVideoInfo(
-  file: File
-): Promise<BrowserVideoInfo> {
-  throwIfAborted();
+function getAudioStream(
+  metadata: VideoMetadata
+) {
+  return metadata.streams?.find(
+    (stream) =>
+      stream.codec_type ===
+      "audio"
+  );
+}
 
-  if (typeof document === "undefined" || typeof URL === "undefined") {
-    throw createUserError(
-      "Video metadata is not available in this browser context."
+function getDuration(
+  metadata: VideoMetadata
+): number | null {
+  const duration =
+    Number(
+      metadata.format?.duration
     );
+
+  if (
+    Number.isFinite(
+      duration
+    ) &&
+    duration > 0
+  ) {
+    return duration;
   }
 
-  const url = URL.createObjectURL(file);
-  const video = document.createElement("video");
-  video.preload = "metadata";
-  video.muted = false;
-  video.playsInline = true;
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timeoutId = window.setTimeout(() => {
-      finishReject(new Error("The browser could not read the video's metadata."));
-    }, METADATA_TIMEOUT);
-
-    const cleanup = () => {
-      window.clearTimeout(timeoutId);
-      video.removeAttribute("src");
-      video.load();
-      URL.revokeObjectURL(url);
-      activeSignal?.removeEventListener("abort", onAbort);
-    };
-
-    const finishResolve = (value: BrowserVideoInfo) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(value);
-    };
-
-    const finishReject = (error: unknown) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-
-    const onLoadedMetadata = () => {
-      const duration = Number(video.duration);
-      const width = video.videoWidth;
-      const height = video.videoHeight;
-
-      if (!Number.isFinite(duration) || duration <= 0 || width <= 0 || height <= 0) {
-        finishReject(new Error("The browser returned incomplete video metadata."));
-        return;
-      }
-
-      finishResolve({ duration, width, height });
-    };
-
-    const onError = () => {
-      finishReject(new Error("The browser could not decode this video's metadata."));
-    };
-
-    const onAbort = () => {
-      finishReject(new DOMException("Video processing was cancelled.", "AbortError"));
-    };
-
-    video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
-    video.addEventListener("error", onError, { once: true });
-    activeSignal?.addEventListener("abort", onAbort, { once: true });
-    video.src = url;
-    video.load();
-  });
-}
-
-function browserInfoToMetadata(
-  file: File,
-  info: BrowserVideoInfo
-): VideoMetadata {
-  const duration = info.duration.toFixed(3);
-  const bitRate = info.duration > 0
-    ? Math.round((file.size * 8) / info.duration).toString()
-    : undefined;
-
-  return {
-    format: {
-      filename: file.name,
-      format_name: file.type || getExtension(file),
-      duration,
-      size: String(file.size),
-      bit_rate: bitRate,
-    },
-    streams: [
-      {
-        codec_type: "video",
-        width: info.width,
-        height: info.height,
-        duration,
-      },
-    ],
-  };
-}
-
-async function getVideoMetadataForProcessing(
-  file: File
-): Promise<{ metadata: VideoMetadata; info: BrowserVideoInfo }> {
-  const info = await getBrowserVideoInfo(file);
-  return {
-    info,
-    metadata: browserInfoToMetadata(file, info),
-  };
-}
-
-async function detectAudioStream(
-  ffmpeg: FFmpeg,
-  input: string
-): Promise<boolean> {
-  throwIfAborted();
-  const logs: string[] = [];
-  const onLog = ({ message }: { message: string }) => logs.push(message);
-  ffmpeg.on("log", onLog);
-
-  try {
-    const code = await ffmpeg.exec(
-      [
-        "-hide_banner",
-        "-loglevel",
-        "info",
-        "-i",
-        input,
-        "-map",
-        "0:a:0",
-        "-t",
-        "0.001",
-        "-f",
-        "null",
-        "-",
-      ],
-      5000,
-      { signal: activeSignal }
+  const videoStream =
+    getVideoStream(
+      metadata
     );
 
-    if (code === 0) return true;
+  const streamDuration =
+    Number(
+      videoStream?.duration
+    );
 
-    const text = logs.join("\n");
-    return /Stream #\d+:\d+.*Audio:/i.test(text);
-  } catch (error) {
-    if (activeSignal?.aborted) throw error;
-    return /Stream #\d+:\d+.*Audio:/i.test(logs.join("\n"));
+  if (
+    Number.isFinite(
+      streamDuration
+    ) &&
+    streamDuration > 0
+  ) {
+    return streamDuration;
+  }
+
+  return null;
+}
+
+async function probeMetadataFromInput(
+  ffmpeg: FFmpeg,
+  input: string,
+  output = "probe.json"
+): Promise<VideoMetadata> {
+  try {
+    await execFFprobe(
+      ffmpeg,
+      [
+        "-v",
+        "quiet",
+
+        "-print_format",
+        "json",
+
+        "-show_entries",
+        "format=filename,format_name,duration,size,bit_rate:stream=codec_name,codec_type,width,height,r_frame_rate,duration,sample_rate,channels",
+
+        input,
+
+        "-o",
+        output,
+      ]
+    );
+
+    const data =
+      (await ffmpeg.readFile(
+        output,
+        "utf8"
+      )) as string;
+
+    return JSON.parse(
+      data
+    ) as VideoMetadata;
   } finally {
-    ffmpeg.off("log", onLog);
+    await safeDelete(
+      ffmpeg,
+      output
+    );
   }
 }
 
@@ -969,48 +919,68 @@ async function processVideoInternal(
   options: VideoProcessOptions
 ): Promise<VideoOutput> {
   validateFile(file);
+  if (toolId === "video-compressor") validateVideoCompressorFile(file);
+  throwIfAborted(options.signal);
 
-  const ffmpeg =
-    await getFFmpeg();
-
-  const input =
-    await writeInput(
-      ffmpeg,
-      file
-    );
-
-  let output =
-    "output.mp4";
-
-  let mimeType =
-    "video/mp4";
-
-  let shouldResetOnError =
-    false;
+  let ffmpeg: FFmpeg | null = null;
+  let input = "";
+  let mountedInputDirectory: string | null = null;
+  let output = "output.mp4";
+  let mimeType = "video/mp4";
+  let shouldResetOnError = false;
 
   try {
+    ffmpeg = await getFFmpeg(options.signal);
+    if (toolId === "video-compressor") {
+      const mounted = await mountInputFile(ffmpeg, file, options.signal);
+      input = mounted.path;
+      mountedInputDirectory = mounted.directory;
+    } else {
+      input = await writeInput(ffmpeg, file, "input", options.signal);
+    }
     /*
      * Probe once for operations that need
      * duration/audio/dimensions.
      */
-    let metadata: VideoMetadata | null = null;
-    const needsDimensionsOrDuration =
-      toolId === "video-cropper";
+    let metadata:
+      | VideoMetadata
+      | null = null;
 
-    if (needsDimensionsOrDuration) {
-      const inspected = await getVideoMetadataForProcessing(file);
-      metadata = inspected.metadata;
+    const needsMetadata =
+      toolId ===
+        "video-trimmer" ||
+      toolId ===
+        "video-cutter" ||
+      toolId ===
+        "video-cropper" ||
+      toolId ===
+        "video-speed-changer" ||
+      toolId ===
+        "video-volume-booster" ||
+      toolId ===
+        "extract-audio-from-video" ||
+      toolId ===
+        "video-frame-extractor" ||
+      toolId ===
+        "video-thumbnail-generator";
+
+    if (needsMetadata) {
+      metadata =
+        await probeMetadataFromInput(
+          ffmpeg,
+          input
+        );
     }
 
-    const needsAudioDetection =
-      toolId === "video-speed-changer" ||
-      toolId === "video-volume-booster" ||
-      toolId === "extract-audio-from-video" ||
-      toolId === "mp4-to-webm";
+    const audioStream =
+      metadata
+        ? getAudioStream(
+            metadata
+          )
+        : undefined;
 
-    const hasAudio = needsAudioDetection
-      ? await detectAudioStream(ffmpeg, input)
-      : false;
+    const hasAudio =
+      Boolean(audioStream);
 
     /* =====================================================
        TRIM / CUT
@@ -1022,10 +992,30 @@ async function processVideoInternal(
       toolId ===
         "video-cutter"
     ) {
-      const start = Math.max(
-        0,
-        safeNumber(options.start, 0)
-      );
+      const duration =
+        metadata
+          ? getDuration(
+              metadata
+            )
+          : null;
+
+      const start =
+        Math.max(
+          0,
+          safeNumber(
+            options.start,
+            0
+          )
+        );
+
+      if (
+        duration !== null &&
+        start >= duration
+      ) {
+        throw createUserError(
+          "The start time is outside the video duration."
+        );
+      }
 
       const requestedEnd =
         options.end !== undefined
@@ -1038,7 +1028,15 @@ async function processVideoInternal(
             )
           : null;
 
-
+      if (
+        requestedEnd !== null &&
+        duration !== null &&
+        requestedEnd > duration
+      ) {
+        throw createUserError(
+          "The end time is longer than the video duration."
+        );
+      }
 
       const args = [
         "-ss",
@@ -1118,34 +1116,28 @@ async function processVideoInternal(
         [
           "-i",
           input,
-
           "-map",
           "0:v:0",
-
           "-map",
           "0:a:0?",
-
           "-c:v",
           "libx264",
-
           "-preset",
-          "ultrafast",
-
-          ...qualityArgs(
-            options.quality
-          ),
-
+          "veryfast",
+          ...qualityArgs(options.quality),
           "-c:a",
           "aac",
-
           "-b:a",
           "96k",
-
           "-movflags",
           "+faststart",
-
+          "-threads",
+          "1",
           output,
-        ]
+        ],
+        EXEC_TIMEOUT,
+        options.signal,
+        options.onProgress
       );
     }
 
@@ -1184,7 +1176,7 @@ async function processVideoInternal(
           "libx264",
 
           "-preset",
-          "ultrafast",
+          "veryfast",
 
           "-crf",
           "23",
@@ -1198,6 +1190,8 @@ async function processVideoInternal(
           "-movflags",
           "+faststart",
 
+          "-threads",
+          "1",
 
           output,
         ]
@@ -1269,7 +1263,7 @@ async function processVideoInternal(
           "libx264",
 
           "-preset",
-          "ultrafast",
+          "veryfast",
 
           "-crf",
           "23",
@@ -1283,6 +1277,8 @@ async function processVideoInternal(
           "-movflags",
           "+faststart",
 
+          "-threads",
+          "1",
 
           output,
         ]
@@ -1337,7 +1333,7 @@ async function processVideoInternal(
           "libx264",
 
           "-preset",
-          "ultrafast",
+          "veryfast",
 
           "-crf",
           "23",
@@ -1351,6 +1347,8 @@ async function processVideoInternal(
           "-movflags",
           "+faststart",
 
+          "-threads",
+          "1",
 
           output,
         ]
@@ -1390,7 +1388,7 @@ async function processVideoInternal(
           "libx264",
 
           "-preset",
-          "ultrafast",
+          "veryfast",
 
           "-crf",
           "23",
@@ -1404,6 +1402,8 @@ async function processVideoInternal(
           "-movflags",
           "+faststart",
 
+          "-threads",
+          "1",
 
           output,
         ]
@@ -1452,7 +1452,7 @@ async function processVideoInternal(
             "libx264",
 
             "-preset",
-            "ultrafast",
+            "veryfast",
 
             "-crf",
             "23",
@@ -1465,6 +1465,9 @@ async function processVideoInternal(
 
             "-movflags",
             "+faststart",
+
+            "-threads",
+            "1",
 
             output,
           ]
@@ -1483,7 +1486,7 @@ async function processVideoInternal(
             "libx264",
 
             "-preset",
-            "ultrafast",
+            "veryfast",
 
             "-crf",
             "23",
@@ -1492,6 +1495,9 @@ async function processVideoInternal(
 
             "-movflags",
             "+faststart",
+
+            "-threads",
+            "1",
 
             output,
           ]
@@ -1663,6 +1669,8 @@ async function processVideoInternal(
 
           "-an",
 
+          "-threads",
+          "1",
 
           "-loop",
           "0",
@@ -1693,7 +1701,7 @@ async function processVideoInternal(
           "libx264",
 
           "-preset",
-          "ultrafast",
+          "veryfast",
 
           "-crf",
           "23",
@@ -1706,6 +1714,8 @@ async function processVideoInternal(
           "-movflags",
           "+faststart",
 
+          "-threads",
+          "1",
 
           output,
         ]
@@ -1720,93 +1730,61 @@ async function processVideoInternal(
       toolId ===
       "mp4-to-webm"
     ) {
-      output = "output.webm";
-      mimeType = "video/webm";
+      output =
+        "output.webm";
 
-      /*
-       * Do not start with VP9 here.
-       *
-       * libvpx-vp9 is noticeably more memory-hungry in ffmpeg.wasm,
-       * and a failed WASM memory access can poison the FFmpeg runtime.
-       * The old implementation then tried several more encoders in the
-       * same poisoned runtime, which produced the same error repeatedly.
-       *
-       * VP8 + Opus is a much safer browser-side WebM baseline. We also
-       * cap very large dimensions so a 4K/8K source does not force an
-       * unnecessarily large WASM frame buffer.
-       */
-      const info = await getBrowserVideoInfo(file);
-      const needsScale =
-        info.width > 1920 ||
-        info.height > 1920;
-
-      const videoFilter = needsScale
-        ? "scale=w='min(1920,iw)':h='min(1920,ih)':force_original_aspect_ratio=decrease"
-        : null;
+      mimeType =
+        "video/webm";
 
       const args = [
         "-i",
         input,
+
         "-map",
         "0:v:0",
+
+        "-map",
+        "0:a:0?",
+
         "-c:v",
-        "libvpx",
-        "-deadline",
-        "realtime",
-        "-cpu-used",
-        "8",
+        "libvpx-vp9",
+
         "-crf",
-        "10",
+        "32",
+
         "-b:v",
         "0",
-        "-threads",
-        "1",
-      ];
 
-      if (videoFilter) {
-        args.push("-vf", videoFilter);
-      }
+        "-deadline",
+        "good",
+
+        "-cpu-used",
+        "4",
+      ];
 
       if (hasAudio) {
         args.push(
-          "-map",
-          "0:a:0?",
           "-c:a",
           "libopus",
           "-b:a",
           "96k"
         );
       } else {
-        args.push("-an");
+        args.push(
+          "-an"
+        );
       }
 
       args.push(
-        "-y",
+        "-threads",
+        "1",
         output
       );
 
-      try {
-        await execFFmpeg(
-          ffmpeg,
-          args
-        );
-      } catch (error) {
-        if (isFatalWasmError(error)) {
-          /*
-           * Reset immediately. Never retry another encoder inside the
-           * same WASM instance after a memory trap. The outer cleanup
-           * will also make the next operation start with a clean runtime.
-           */
-          resetFFmpeg();
-          throw createUserError(
-            "MP4 to WebM ran out of browser WebAssembly memory. Try a smaller/shorter video or a 1080p-or-lower source."
-          );
-        }
-
-        throw createUserError(
-          `MP4 to WebM failed: ${errorToString(error)}`
-        );
-      }
+      await execFFmpeg(
+        ffmpeg,
+        args
+      );
     }
 
     /* =====================================================
@@ -1831,7 +1809,7 @@ async function processVideoInternal(
         "libx264",
 
         "-preset",
-        "ultrafast",
+        "veryfast",
 
         "-crf",
         "23",
@@ -1854,6 +1832,8 @@ async function processVideoInternal(
         "-movflags",
         "+faststart",
 
+        "-threads",
+        "1",
 
         output
       );
@@ -1890,23 +1870,49 @@ async function processVideoInternal(
       mimeType =
         "image/png";
 
-      const time = Math.max(
-        0,
-        safeNumber(options.frameTime, 0)
-      );
+      const duration =
+        metadata
+          ? getDuration(
+              metadata
+            )
+          : null;
+
+      const requestedTime =
+        Math.max(
+          0,
+          safeNumber(
+            options.frameTime,
+            0
+          )
+        );
+
+      const time =
+        duration !== null
+          ? Math.min(
+              requestedTime,
+              Math.max(
+                0,
+                duration -
+                  0.05
+              )
+            )
+          : requestedTime;
 
       await execFFmpeg(
         ffmpeg,
         [
           "-ss",
           String(time),
+
           "-i",
           input,
+
           "-frames:v",
           "1",
+
           "-vf",
           "scale='min(1280,iw)':-2",
-          "-y",
+
           output,
         ]
       );
@@ -1922,7 +1928,8 @@ async function processVideoInternal(
       await readBlob(
         ffmpeg,
         output,
-        mimeType
+        mimeType,
+        options.signal
       );
 
     return {
@@ -1937,326 +1944,24 @@ async function processVideoInternal(
      * a completely fresh WASM runtime.
      */
     if (
-      isFatalWasmError(
-        error
-      )
+      isFatalWasmError(error) ||
+      (error instanceof VideoProcessingError && error.code === "MEMORY_ERROR")
     ) {
-      shouldResetOnError =
-        true;
+      shouldResetOnError = true;
     }
 
     throw error;
   } finally {
-    await safeDelete(
-      ffmpeg,
-      input
-    );
-
-    await safeDelete(
-      ffmpeg,
-      output
-    );
-
-    if (
-      shouldResetOnError
-    ) {
-      resetFFmpeg();
-    }
-
-    activeProgressCallback = null;
-  }
-}
-
-async function runCancellable<T>(
-  operation: () => Promise<T>,
-  signal?: AbortSignal,
-  onProgress?: (progress: number) => void
-): Promise<T> {
-  return runExclusive(async () => {
-    const controller = new AbortController();
-    activeAbortController = controller;
-    activeSignal = controller.signal;
-    activeProgressCallback = onProgress ?? null;
-
-    const callerAbort = () => {
-      controller.abort();
-      resetFFmpeg();
-    };
-
-    signal?.addEventListener("abort", callerAbort, { once: true });
-
-    try {
-      throwIfAborted();
-      return await operation();
-    } finally {
-      signal?.removeEventListener("abort", callerAbort);
-      if (activeAbortController === controller) {
-        activeAbortController = null;
-        activeSignal = undefined;
-        activeProgressCallback = null;
+    if (ffmpeg) {
+      if (mountedInputDirectory) {
+        await unmountInputFile(ffmpeg, mountedInputDirectory);
+      } else if (input) {
+        await safeDelete(ffmpeg, input);
       }
+      await safeDelete(ffmpeg, output);
     }
-  });
-}
-
-/* =========================================================
-   NATIVE BROWSER MP4 → WEBM
-========================================================= */
-
-/**
- * Prefer the browser's native MediaRecorder pipeline for MP4 → WebM.
- *
- * This is deliberately separate from ffmpeg.wasm. WebM encoding with
- * libvpx can hit the fixed WebAssembly memory ceiling even for small
- * inputs, while MediaRecorder uses the browser's native media stack.
- */
-async function convertMp4ToWebmNative(
-  file: File,
-  options: Pick<VideoProcessOptions, "signal" | "onProgress">
-): Promise<VideoOutput> {
-  throwIfAborted();
-
-  if (
-    typeof document === "undefined" ||
-    typeof URL === "undefined" ||
-    typeof MediaRecorder === "undefined"
-  ) {
-    throw createUserError(
-      "Your browser does not support native MP4 to WebM conversion. Try the latest Chrome or Edge."
-    );
+    if (shouldResetOnError) resetFFmpeg();
   }
-
-  const candidates = [
-    "video/webm;codecs=vp8,opus",
-    "video/webm;codecs=vp8",
-    "video/webm",
-  ];
-
-  const mimeType = candidates.find((type) =>
-    MediaRecorder.isTypeSupported(type)
-  );
-
-  if (!mimeType) {
-    throw createUserError(
-      "This browser cannot encode WebM directly. Try the latest Chrome or Edge."
-    );
-  }
-
-  const url = URL.createObjectURL(file);
-  const video = document.createElement("video");
-  video.preload = "auto";
-  video.playsInline = true;
-  video.muted = false;
-  video.controls = false;
-
-  const chunks: Blob[] = [];
-  let recorder: MediaRecorder | null = null;
-  let captureStream: MediaStream | null = null;
-  let audioContext: AudioContext | null = null;
-  let audioDestination: MediaStreamAudioDestinationNode | null = null;
-  let settled = false;
-  let abortHandler: (() => void) | null = null;
-
-  const cleanup = () => {
-    if (abortHandler && options.signal) {
-      options.signal.removeEventListener("abort", abortHandler);
-    }
-
-    try {
-      recorder?.stop();
-    } catch {
-      // Already inactive.
-    }
-
-    captureStream?.getTracks().forEach((track) => track.stop());
-    audioDestination?.stream.getTracks().forEach((track) => track.stop());
-
-    if (audioContext) {
-      void audioContext.close().catch(() => undefined);
-    }
-
-    video.pause();
-    video.removeAttribute("src");
-    video.load();
-    URL.revokeObjectURL(url);
-  };
-
-  return new Promise<VideoOutput>((resolve, reject) => {
-    const finishReject = (error: unknown) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-
-    const finishResolve = (blob: Blob) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      options.onProgress?.(1);
-      resolve({
-        blob,
-        filename: file.name.replace(/\.[^.]+$/i, "") + ".webm",
-        mimeType: blob.type || "video/webm",
-      });
-    };
-
-    const abort = () => {
-      if (settled) return;
-
-      finishReject(
-        new DOMException(
-          "Video processing was cancelled.",
-          "AbortError"
-        )
-      );
-    };
-
-    abortHandler = abort;
-    options.signal?.addEventListener("abort", abort, { once: true });
-
-    video.onerror = () => {
-      finishReject(
-        new Error(
-          "The browser could not decode this MP4. Try a standard H.264 MP4 file."
-        )
-      );
-    };
-
-    video.onplay = async () => {
-      try {
-        throwIfAborted();
-
-        const capture = (
-          video as HTMLVideoElement & {
-            captureStream?: () => MediaStream;
-          }
-        ).captureStream;
-
-        captureStream =
-          typeof capture === "function"
-            ? capture.call(video)
-            : null;
-
-        if (!captureStream) {
-          finishReject(
-            new Error(
-              "This browser does not support video capture for WebM conversion. Try the latest Chrome or Edge."
-            )
-          );
-          return;
-        }
-
-        /*
-         * Route source audio into a MediaStreamDestination rather than the
-         * speakers. The video element itself remains unmuted so the captured
-         * audio track is not silenced.
-         */
-        try {
-          audioContext = new AudioContext();
-          audioDestination =
-            audioContext.createMediaStreamDestination();
-
-          const source =
-            audioContext.createMediaElementSource(video);
-          source.connect(audioDestination);
-
-          if (audioContext.state === "suspended") {
-            await audioContext.resume();
-          }
-        } catch {
-          // Video-only WebM is still valid if Web Audio is unavailable.
-          audioContext = null;
-          audioDestination = null;
-        }
-
-        const tracks = [
-          ...captureStream.getVideoTracks(),
-          ...(audioDestination?.stream.getAudioTracks() ?? []),
-        ];
-
-        const recordingStream = new MediaStream(tracks);
-
-        const videoBitsPerSecond =
-          video.videoWidth >= 1920 || video.videoHeight >= 1080
-            ? 5_000_000
-            : video.videoWidth >= 1280 || video.videoHeight >= 720
-              ? 3_500_000
-              : 2_000_000;
-
-        recorder = new MediaRecorder(recordingStream, {
-          mimeType,
-          videoBitsPerSecond,
-          audioBitsPerSecond: 128_000,
-        });
-
-        recorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            chunks.push(event.data);
-          }
-        };
-
-        recorder.onerror = () => {
-          finishReject(
-            new Error(
-              "The browser's WebM encoder failed. Try the latest Chrome or Edge."
-            )
-          );
-        };
-
-        recorder.onstop = () => {
-          if (settled) return;
-
-          const blob = new Blob(chunks, {
-            type: mimeType.split(";")[0],
-          });
-
-          if (blob.size === 0) {
-            finishReject(
-              new Error(
-                "The browser produced an empty WebM file. Try another MP4."
-              )
-            );
-            return;
-          }
-
-          finishResolve(blob);
-        };
-
-        video.ontimeupdate = () => {
-          if (video.duration > 0) {
-            options.onProgress?.(
-              Math.min(0.99, video.currentTime / video.duration)
-            );
-          }
-        };
-
-        video.onended = () => {
-          options.onProgress?.(0.99);
-          if (recorder && recorder.state !== "inactive") {
-            recorder.stop();
-          }
-        };
-
-        recorder.start(250);
-      } catch (error) {
-        finishReject(error);
-      }
-    };
-
-    video.src = url;
-    video.load();
-
-    // Call play immediately so browser user-activation from the Process
-    // button can be used for playback/autoplay permission.
-    void video.play().catch((error) => {
-      finishReject(
-        new Error(
-          `The browser could not start video playback for conversion: ${errorToString(error)}`
-        )
-      );
-    });
-  });
 }
 
 /* =========================================================
@@ -2268,19 +1973,25 @@ export async function processVideo(
   file: File,
   options: VideoProcessOptions = {}
 ): Promise<VideoOutput> {
-  if (toolId === "mp4-to-webm") {
-    return runCancellable(
-      () => convertMp4ToWebmNative(file, options),
-      options.signal,
-      options.onProgress
-    );
-  }
+  return runExclusive(async () => {
+    throwIfAborted(options.signal);
+    try {
+      return await processVideoInternal(toolId, file, options);
+    } catch (error) {
+      if (isFatalWasmError(error) || (error instanceof VideoProcessingError && error.code === "MEMORY_ERROR")) {
+        resetFFmpeg();
+      }
+      if (isAbortError(error) || options.signal?.aborted) {
+        throw new VideoProcessingError("CANCELLED", "Video processing was cancelled.", errorToString(error));
+      }
+      if (error instanceof VideoProcessingError) throw error;
+      throw new VideoProcessingError("UNKNOWN_ERROR", "Video processing failed on this device. Please try again or use a smaller video.", errorToString(error));
+    }
+  });
+}
 
-  return runCancellable(
-    () => processVideoInternal(toolId, file, options),
-    options.signal,
-    options.onProgress
-  );
+export function cancelVideoProcessing(): void {
+  resetFFmpeg();
 }
 
 /* =========================================================
@@ -2367,7 +2078,7 @@ async function mergeVideosInternal(
           "libx264",
 
           "-preset",
-          "ultrafast",
+          "veryfast",
 
           "-crf",
           "23",
@@ -2375,6 +2086,8 @@ async function mergeVideosInternal(
           "-pix_fmt",
           "yuv420p",
 
+          "-threads",
+          "1",
 
           normalizedName,
         ]
@@ -2483,13 +2196,13 @@ async function mergeVideosInternal(
 }
 
 export async function mergeVideos(
-  files: File[],
-  options: Pick<VideoProcessOptions, "signal" | "onProgress"> = {}
+  files: File[]
 ): Promise<VideoOutput> {
-  return runCancellable(
-    () => mergeVideosInternal(files),
-    options.signal,
-    options.onProgress
+  return runExclusive(
+    () =>
+      mergeVideosInternal(
+        files
+      )
   );
 }
 
@@ -2559,6 +2272,8 @@ async function extractVideoImagesInternal(
         "-frames:v",
         String(safeMax),
 
+        "-threads",
+        "1",
 
         "frame_%03d.png",
       ]
@@ -2665,13 +2380,15 @@ async function extractVideoImagesInternal(
 export async function extractVideoImages(
   file: File,
   fps = 1,
-  maxFrames = 30,
-  options: Pick<VideoProcessOptions, "signal" | "onProgress"> = {}
+  maxFrames = 30
 ): Promise<ImageOutput[]> {
-  return runCancellable(
-    () => extractVideoImagesInternal(file, fps, maxFrames),
-    options.signal,
-    options.onProgress
+  return runExclusive(
+    () =>
+      extractVideoImagesInternal(
+        file,
+        fps,
+        maxFrames
+      )
   );
 }
 
@@ -2684,26 +2401,78 @@ async function getVideoMetadataInternal(
 ): Promise<VideoMetadata> {
   validateFile(file);
 
+  const ffmpeg =
+    await getFFmpeg();
+
+  const input =
+    await writeInput(
+      ffmpeg,
+      file,
+      "metadata_input"
+    );
+
+  const metadataFile =
+    "metadata.json";
+
   try {
-    const { metadata } = await getVideoMetadataForProcessing(file);
-    return metadata;
+    await execFFprobe(
+      ffmpeg,
+      [
+        "-v",
+        "quiet",
+
+        "-print_format",
+        "json",
+
+        "-show_entries",
+        "format=filename,format_name,duration,size,bit_rate:stream=codec_name,codec_type,width,height,r_frame_rate,duration,sample_rate,channels",
+
+        input,
+
+        "-o",
+        metadataFile,
+      ]
+    );
+
+    const data =
+      (await ffmpeg.readFile(
+        metadataFile,
+        "utf8"
+      )) as string;
+
+    return JSON.parse(
+      data
+    ) as VideoMetadata;
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw error;
+    if (
+      isFatalWasmError(
+        error
+      )
+    ) {
+      resetFFmpeg();
     }
 
-    throw createUserError(
-      "Unable to read video information. The browser cannot read this video's metadata. Try MP4 (H.264) or WebM (VP8/VP9)."
+    throw error;
+  } finally {
+    await safeDelete(
+      ffmpeg,
+      input
+    );
+
+    await safeDelete(
+      ffmpeg,
+      metadataFile
     );
   }
 }
 
 export async function getVideoMetadata(
-  file: File,
-  options: Pick<VideoProcessOptions, "signal"> = {}
+  file: File
 ): Promise<VideoMetadata> {
-  return runCancellable(
-    () => getVideoMetadataInternal(file),
-    options.signal
+  return runExclusive(
+    () =>
+      getVideoMetadataInternal(
+        file
+      )
   );
 }

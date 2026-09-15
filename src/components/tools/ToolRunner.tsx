@@ -9,6 +9,7 @@ import ColorTool from "@/components/color/ColorTool";
 import TextTool from "../text/TextTool";
 import AudioTool from "../audio/AudioTool";
 import VideoTool from "../video/VideoTool";
+import FileDataTool from "../data/DataTool";
 
 interface ToolRunnerProps {
   tool: Tool;
@@ -42,6 +43,10 @@ export default function ToolRunner({
 
   case "audio":
   return <AudioTool toolId={tool.id} />;
+
+  case "file-data":
+  return <FileDataTool toolId={tool.id} />;
+
 
     default:
       return (
