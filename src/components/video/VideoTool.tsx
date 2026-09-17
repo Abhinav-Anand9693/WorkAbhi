@@ -1,1752 +1,313 @@
 "use client";
 
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { resolveTool } from "@/lib/toolRegistry";
 import {
-  useEffect,
-  useRef,
-  useState,
-  type ChangeEvent,
-} from "react";
-
-import VideoImageResults from "@/components/video/VideoImageResults";
-
-import {
-  processVideo,
-  mergeVideos,
+  cancelVideoProcessing,
+  extractVideoFrame,
   extractVideoImages,
   getVideoMetadata,
-  cancelVideoProcessing,
-  VideoProcessingError,
+  getVideoToolErrorMessage,
+  mergeVideos,
+  processVideo,
 } from "@/engine/video/videoEngine";
-
-import type {
-  VideoOutput,
-  ImageOutput,
-  VideoMetadata,
-  VideoProcessOptions,
-} from "@/engine/video/videoEngine";
+import type { VideoMetadata, VideoOutput, VideoProcessOptions, VideoProgress, VideoQuality } from "@/engine/video/videoTypes";
 
 interface VideoToolProps {
   toolId: string;
 }
 
-const VIDEO_ACCEPT =
-  "video/*,.mp4,.webm,.mov,.mkv,.avi,.m4v,.3gp";
+const VIDEO_ACCEPT = "video/mp4,video/webm,video/quicktime,video/x-matroska,video/*,.mp4,.webm,.mov,.mkv,.m4v,.mpeg,.mpg,.ts,.ogv";
+const GIF_ACCEPT = "image/gif,.gif";
 
-export default function VideoTool({
-  toolId,
-}: VideoToolProps) {
-  /* -------------------------------------------------
-   * FILE STATE
-   * ------------------------------------------------- */
+
+
+export default function VideoTool({ toolId }: VideoToolProps) {
+ const title = (() => {
+  try {
+    return resolveTool(toolId)?.name ?? "Video Tool";
+  } catch {
+    return "Video Tool";
+  }
+})();
+  const isGifOutput = toolId === "video-to-gif";
+  const merger = toolId === "video-merger";
+  const metadataTool = toolId === "video-metadata-viewer";
+  const frameTool = toolId === "video-frame-extractor" || toolId === "video-thumbnail-generator" || toolId === "video-to-images";
+  const gifInput = toolId === "gif-to-video";
 
   const [files, setFiles] = useState<File[]>([]);
-
-  /* -------------------------------------------------
-   * RESULT STATE
-   * ------------------------------------------------- */
-
-  const [result, setResult] =
-    useState<VideoOutput | null>(null);
-
-  const [imageResults, setImageResults] =
-    useState<ImageOutput[]>([]);
-
-  const [metadata, setMetadata] =
-    useState<VideoMetadata | null>(null);
-
-  /*
-   * Preview URL is state because it affects rendering.
-   * We NEVER access a ref during render.
-   */
-  const [previewUrl, setPreviewUrl] =
-    useState<string | null>(null);
-
-  /*
-   * Keep the current URL in a ref ONLY for cleanup.
-   * It is never accessed during rendering.
-   */
-  const previewUrlRef =
-    useRef<string | null>(null);
-
-  const fileInputRef =
-    useRef<HTMLInputElement | null>(null);
-
-  const processingControllerRef = useRef<AbortController | null>(null);
-  const processingGenerationRef = useRef(0);
-
-  /* -------------------------------------------------
-   * UI STATE
-   * ------------------------------------------------- */
-
-  const [loading, setLoading] =
-    useState(false);
-
-  const [metadataLoading, setMetadataLoading] =
-    useState(false);
-
-  const [progress, setProgress] =
-    useState(0);
-
-  const [error, setError] =
-    useState<string | null>(null);
-
-  /* -------------------------------------------------
-   * SETTINGS
-   * ------------------------------------------------- */
-
-  const [trimStart, setTrimStart] =
-    useState("0");
-
-  const [trimEnd, setTrimEnd] =
-    useState("");
-
-  const [resizeWidth, setResizeWidth] =
-    useState("");
-
-  const [resizeHeight, setResizeHeight] =
-    useState("");
-
-  const [cropX, setCropX] =
-    useState("0");
-
-  const [cropY, setCropY] =
-    useState("0");
-
-  const [cropWidth, setCropWidth] =
-    useState("");
-
-  const [cropHeight, setCropHeight] =
-    useState("");
-
-  const [rotation, setRotation] =
-    useState("90");
-
-  const [flip, setFlip] =
-    useState<"horizontal" | "vertical">(
-      "horizontal"
-    );
-
-  const [quality, setQuality] =
-    useState<"high" | "medium" | "low">(
-      "medium"
-    );
-
-  const [speed, setSpeed] =
-    useState("1");
-
-  const [volume, setVolume] =
-    useState("2");
-
-  const [frameTime, setFrameTime] =
-    useState("0");
-
-  const [extractFps, setExtractFps] =
-    useState("1");
-
-  const [maxFrames, setMaxFrames] =
-    useState("20");
-
-  /* -------------------------------------------------
-   * TOOL HELPERS
-   * ------------------------------------------------- */
-
-  const isMerger =
-    toolId === "video-merger";
-
-  const isTrimTool =
-    toolId === "video-trimmer" ||
-    toolId === "video-cutter";
-
-  const isCompressTool =
-    toolId === "video-compressor";
-
-  const isResizeTool =
-    toolId === "video-resizer";
-
-  const isCropTool =
-    toolId === "video-cropper";
-
-  const isRotateTool =
-    toolId === "video-rotator";
-
-  const isFlipTool =
-    toolId === "video-flipper";
-
-  const isSpeedTool =
-    toolId === "video-speed-changer";
-
-  const isVolumeTool =
-    toolId === "video-volume-booster";
-
-  const isFrameTool =
-    toolId === "video-frame-extractor";
-
-  const isImagesTool =
-    toolId === "video-to-images";
-
-  const isMetadataTool =
-    toolId === "video-metadata-viewer";
-
-  const isConversionTool =
-    toolId === "mp4-to-webm" ||
-    toolId === "webm-to-mp4";
-
-  const isAudioExtractionTool =
-    toolId === "extract-audio-from-video";
-
-  /* -------------------------------------------------
-   * TOOL TITLE
-   * ------------------------------------------------- */
-
-  const getToolTitle = () => {
-    const titles: Record<string, string> = {
-      "video-trimmer":
-        "Video Trimmer",
-
-      "video-cutter":
-        "Video Cutter",
-
-      "video-merger":
-        "Video Merger",
-
-      "video-compressor":
-        "Video Compressor",
-
-      "video-resizer":
-        "Video Resizer",
-
-      "video-cropper":
-        "Video Cropper",
-
-      "video-rotator":
-        "Video Rotator",
-
-      "video-flipper":
-        "Video Flipper",
-
-      "video-speed-changer":
-        "Video Speed Changer",
-
-      "video-volume-booster":
-        "Video Volume Booster",
-
-      "mute-video":
-        "Mute Video",
-
-      "extract-audio-from-video":
-        "Extract Audio from Video",
-
-      "video-to-gif":
-        "Video to GIF",
-
-      "gif-to-video":
-        "GIF to Video",
-
-      "mp4-to-webm":
-        "MP4 to WebM",
-
-      "webm-to-mp4":
-        "WebM to MP4",
-
-      "video-frame-extractor":
-        "Video Frame Extractor",
-
-      "video-thumbnail-generator":
-        "Video Thumbnail Generator",
-
-      "video-metadata-viewer":
-        "Video Metadata Viewer",
-
-      "video-to-images":
-        "Video to Images",
-    };
-
-    return titles[toolId] ?? "Video Tool";
-  };
-
-  /* -------------------------------------------------
-   * CLEAR PREVIEW URL
-   * ------------------------------------------------- */
-
-  const revokePreviewUrl = () => {
-    const currentUrl =
-      previewUrlRef.current;
-
-    if (currentUrl) {
-      URL.revokeObjectURL(currentUrl);
-      previewUrlRef.current = null;
-    }
-
-    setPreviewUrl(null);
-  };
-
-  /* -------------------------------------------------
-   * CLEAR RESULT
-   * ------------------------------------------------- */
-
-  const cancelCurrentProcessing = () => {
-    processingGenerationRef.current += 1;
-    processingControllerRef.current?.abort();
-    processingControllerRef.current = null;
-    cancelVideoProcessing();
-    setLoading(false);
-    setMetadataLoading(false);
-  };
-
-  const clearResult = () => {
-    revokePreviewUrl();
-    setResult(null);
-    setImageResults([]);
-    setMetadata(null);
-    setError(null);
-    setProgress(0);
-  };
-
-  const clearFiles = () => {
-    if (loading || metadataLoading) cancelCurrentProcessing();
-    setFiles([]);
-    clearResult();
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
+  const [result, setResult] = useState<VideoOutput | null>(null);
+  const [images, setImages] = useState<Array<{ blob: Blob; filename: string }>>([]);
+  const [metadata, setMetadata] = useState<VideoMetadata | null>(null);
+   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<VideoProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [quality, setQuality] = useState<VideoQuality>("medium");
+  const [format, setFormat] = useState<"mp4" | "webm" | "mov" | "mkv">(toolId === "mp4-to-webm" ? "webm" : "mp4");
+  const [audioFormat, setAudioFormat] = useState<"wav" | "mp3">("wav");
+  const [start, setStart] = useState("0");
+  const [end, setEnd] = useState("");
+  const [width, setWidth] = useState("");
+  const [height, setHeight] = useState("");
+  const [cropLeft, setCropLeft] = useState("0");
+  const [cropTop, setCropTop] = useState("0");
+  const [cropWidth, setCropWidth] = useState("");
+  const [cropHeight, setCropHeight] = useState("");
+  const [rotation, setRotation] = useState<90 | 180 | 270>(90);
+  const [flip, setFlip] = useState<"horizontal" | "vertical">("horizontal");
+  const [speed, setSpeed] = useState("1");
+  const [volume, setVolume] = useState("2");
+  const [fps, setFps] = useState(frameTool ? "1" : "10");
+  const [maxFrames, setMaxFrames] = useState(frameTool ? "20" : "120");
+  const [frameTime, setFrameTime] = useState("0");
+  const [directToDisk, setDirectToDisk] = useState(false);
+
+  const inputRef = useRef<HTMLInputElement>(null);
+  const controllerRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
 
   useEffect(() => {
     return () => {
-      processingGenerationRef.current += 1;
-      processingControllerRef.current?.abort();
-      processingControllerRef.current = null;
-      cancelVideoProcessing();
-      const currentUrl = previewUrlRef.current;
-      if (currentUrl) {
-        URL.revokeObjectURL(currentUrl);
-        previewUrlRef.current = null;
-      }
+      generationRef.current += 1;
+      controllerRef.current?.abort();
+      void cancelVideoProcessing();
     };
   }, []);
 
-  /* -------------------------------------------------
-   * FILE SELECTION
-   * ------------------------------------------------- */
+  const previewUrl = useMemo(() => {
+  if (!result?.blob || result.blob.size === 0) {
+    return null;
+  }
 
-  const handleFileChange = (
-    event: ChangeEvent<HTMLInputElement>
-  ) => {
-    const selectedFiles = Array.from(event.target.files ?? []);
-    if (selectedFiles.length === 0) return;
+  return URL.createObjectURL(result.blob);
+}, [result]);
 
-    if (loading || metadataLoading) cancelCurrentProcessing();
+const imageUrls = useMemo(() => {
+  return images.map((item) => URL.createObjectURL(item.blob));
+}, [images]);
 
-    const validFiles = selectedFiles.filter(
-      (file) => file instanceof File && file.size > 0
-    );
-
-    if (validFiles.length === 0) {
-      setError("Unable to read this video. Please select a valid video file.");
-      return;
+useEffect(() => {
+  return () => {
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
     }
-
-    setFiles(validFiles);
-    clearResult();
   };
+}, [previewUrl]);
 
-  /* -------------------------------------------------
-   * OPEN FILE PICKER
-   * ------------------------------------------------- */
-
-  const openFilePicker = () => {
-    fileInputRef.current?.click();
+useEffect(() => {
+  return () => {
+    imageUrls.forEach((url) => {
+      URL.revokeObjectURL(url);
+    });
   };
+}, [imageUrls]);
 
-  /* -------------------------------------------------
-   * SAFE NUMBER
-   * ------------------------------------------------- */
-
-  const numberOrUndefined = (
-    value: string
-  ): number | undefined => {
-    if (!value.trim()) {
-      return undefined;
-    }
-
-    const parsed = Number(value);
-
-    return Number.isFinite(parsed)
-      ? parsed
-      : undefined;
-  };
-
-  /* -------------------------------------------------
-   * CREATE RESULT PREVIEW
-   * ------------------------------------------------- */
-
-  const setVideoResult = (
-    output: VideoOutput
-  ) => {
-    revokePreviewUrl();
-
-    const url =
-      URL.createObjectURL(output.blob);
-
-    previewUrlRef.current = url;
-
-    setPreviewUrl(url);
-    setResult(output);
-  };
-
-  /* -------------------------------------------------
-   * MAIN PROCESS FUNCTION
-   * ------------------------------------------------- */
-
-  const handleProcess = async () => {
-    setError(null);
+  function resetResults() {
+    setResult(null);
+    setImages([]);
     setMetadata(null);
-    setImageResults([]);
-    setProgress(0);
+    setError(null);
+    setProgress(null);
+  }
 
-    if (files.length === 0) {
-      setError("Please select a video first.");
-      return;
-    }
+  function handleFiles(event: ChangeEvent<HTMLInputElement>) {
+    if (loading) return;
+    const selected = Array.from(event.target.files ?? []);
+    if (!selected.length) return;
+    controllerRef.current?.abort();
+    resetResults();
+    generationRef.current += 1;
+    setFiles(merger ? selected : [selected[0]]);
+  }
 
-    if (loading || metadataLoading) return;
-
-    const generation = ++processingGenerationRef.current;
-    const controller = new AbortController();
-    processingControllerRef.current = controller;
-
-    const isCurrent = () =>
-      processingGenerationRef.current === generation && !controller.signal.aborted;
-
-    const updateProgress = (value: number) => {
-      if (!isCurrent() || !Number.isFinite(value)) return;
-      setProgress(Math.max(0, Math.min(100, Math.round(value * 100))));
+  function optionsFor(controller: AbortController): VideoProcessOptions {
+    return {
+      quality,
+      outputFormat: format,
+      audioOutputFormat: audioFormat,
+      start: start ? Number(start) : undefined,
+      end: end ? Number(end) : undefined,
+      width: toolId === "video-resizer" ? (width ? Number(width) : undefined) : undefined,
+      height: toolId === "video-resizer" ? (height ? Number(height) : undefined) : undefined,
+      crop: toolId === "video-cropper" && cropWidth && cropHeight
+        ? {
+            left: Math.max(0, Number(cropLeft) || 0),
+            top: Math.max(0, Number(cropTop) || 0),
+            width: Math.max(2, Number(cropWidth) || 0),
+            height: Math.max(2, Number(cropHeight) || 0),
+          }
+        : undefined,
+      rotation: toolId === "video-rotator" ? rotation : undefined,
+      flip: toolId === "video-flipper" ? flip : undefined,
+      speed: toolId === "video-speed-changer" ? Number(speed) : undefined,
+      volume: toolId === "video-volume-booster" ? Number(volume) : undefined,
+      fps: Number(fps) || 1,
+      maxFrames: Number(maxFrames) || 20,
+      frameTime: Number(frameTime) || 0,
+      preferCopy: true,
+      saveDirectlyToDisk: directToDisk,
+      signal: controller.signal,
+      onProgress: (value) => {
+        if (generationRef.current === currentGenerationRef.current) setProgress(value);
+      },
     };
+  }
+
+  const currentGenerationRef = useRef(0);
+
+  async function process() {
+    if (loading || !files.length) {
+      if (!files.length) setError("Please select a file first.");
+      return;
+    }
+    resetResults();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    currentGenerationRef.current = generation;
+    setLoading(true);
+
+    const options = optionsFor(controller);
     try {
-      setLoading(true);
-      setProgress(10);
-
-      /* ---------------------------------------------
-       * MERGE VIDEOS
-       * --------------------------------------------- */
-
-      if (toolId === "video-merger") {
-        if (files.length < 2) {
-          throw new Error(
-            "Please select at least 2 videos to merge."
-          );
+      if (metadataTool) {
+        const data = await getVideoMetadata(files[0], options);
+        if (generationRef.current === generation) setMetadata(data);
+      } else if (frameTool) {
+        if (toolId === "video-thumbnail-generator") {
+          const image = await extractVideoFrame(files[0], Number(frameTime) || 0, options);
+          if (generationRef.current === generation && image) setImages([image]);
+        } else {
+          const extracted = await extractVideoImages(files[0], Number(fps) || 1, Number(maxFrames) || 20, options);
+          if (generationRef.current === generation) setImages(extracted);
         }
-
-        if (files.length > 10) {
-          throw new Error(
-            "You can merge up to 10 videos at once."
-          );
-        }
-
-        const output =
-          await mergeVideos(files);
-
-        setProgress(100);
-        setVideoResult(output);
-
-        return;
+      } else if (merger) {
+        const output = await mergeVideos(files, options);
+        if (generationRef.current === generation) setResult(output);
+      } else {
+        const output = await processVideo(toolId as Parameters<typeof processVideo>[0], files[0], options);
+        if (generationRef.current === generation) setResult(output);
       }
-
-      /* ---------------------------------------------
-       * VIDEO TO IMAGES
-       * --------------------------------------------- */
-
-      if (toolId === "video-to-images") {
-        const fps =
-          numberOrUndefined(
-            extractFps
-          ) ?? 1;
-
-        const imageCount =
-          numberOrUndefined(
-            maxFrames
-          ) ?? 20;
-
-        if (fps <= 0) {
-          throw new Error(
-            "FPS must be greater than 0."
-          );
-        }
-
-        if (
-          imageCount <= 0 ||
-          imageCount > 100
-        ) {
-          throw new Error(
-            "Maximum frames must be between 1 and 100."
-          );
-        }
-
-        const images =
-          await extractVideoImages(
-            files[0],
-            fps,
-            imageCount
-          );
-
-        setImageResults(images);
-        setProgress(100);
-
-        return;
-      }
-
-      /* ---------------------------------------------
-       * METADATA
-       * --------------------------------------------- */
-
-      if (
-        toolId ===
-        "video-metadata-viewer"
-      ) {
-        setLoading(false);
-        setMetadataLoading(true);
-        setProgress(20);
-
-        const data =
-          await getVideoMetadata(
-            files[0]
-          );
-
-        setMetadata(data);
-        setProgress(100);
-
-        return;
-      }
-
-      /* ---------------------------------------------
-       * GENERIC OPTIONS
-       * --------------------------------------------- */
-
-      const options: VideoProcessOptions = {
-        signal: controller.signal,
-        onProgress: updateProgress,
-      };
-
-      /* ---------------------------------------------
-       * TRIM / CUT
-       * --------------------------------------------- */
-
-      if (isTrimTool) {
-        const start =
-          numberOrUndefined(
-            trimStart
-          );
-
-        const end =
-          numberOrUndefined(
-            trimEnd
-          );
-
-        if (
-          start !== undefined &&
-          start < 0
-        ) {
-          throw new Error(
-            "Start time cannot be negative."
-          );
-        }
-
-        if (
-          end !== undefined &&
-          end <= (start ?? 0)
-        ) {
-          throw new Error(
-            "End time must be greater than start time."
-          );
-        }
-
-        options.start =
-          start ?? 0;
-
-        options.end =
-          end;
-      }
-
-      /* ---------------------------------------------
-       * RESIZE
-       * --------------------------------------------- */
-
-      if (isResizeTool) {
-        const width =
-          numberOrUndefined(
-            resizeWidth
-          );
-
-        const height =
-          numberOrUndefined(
-            resizeHeight
-          );
-
-        if (
-          !width ||
-          width <= 0
-        ) {
-          throw new Error(
-            "Please enter a valid width."
-          );
-        }
-
-        options.width =
-          Math.floor(width);
-
-        if (
-          height &&
-          height > 0
-        ) {
-          options.height =
-            Math.floor(height);
-        }
-      }
-
-      /* ---------------------------------------------
-       * CROP
-       * --------------------------------------------- */
-
-      if (isCropTool) {
-        const x =
-          numberOrUndefined(
-            cropX
-          ) ?? 0;
-
-        const y =
-          numberOrUndefined(
-            cropY
-          ) ?? 0;
-
-        const width =
-          numberOrUndefined(
-            cropWidth
-          );
-
-        const height =
-          numberOrUndefined(
-            cropHeight
-          );
-
-        if (
-          !width ||
-          width <= 0
-        ) {
-          throw new Error(
-            "Please enter a valid crop width."
-          );
-        }
-
-        if (
-          !height ||
-          height <= 0
-        ) {
-          throw new Error(
-            "Please enter a valid crop height."
-          );
-        }
-
-        if (x < 0 || y < 0) {
-          throw new Error(
-            "Crop position cannot be negative."
-          );
-        }
-
-        options.cropX =
-          Math.floor(x);
-
-        options.cropY =
-          Math.floor(y);
-
-        options.cropWidth =
-          Math.floor(width);
-
-        options.cropHeight =
-          Math.floor(height);
-      }
-
-      /* ---------------------------------------------
-       * ROTATION
-       * --------------------------------------------- */
-
-      if (isRotateTool) {
-        const value =
-          Number(rotation);
-
-        if (
-          value !== 90 &&
-          value !== 180 &&
-          value !== 270
-        ) {
-          throw new Error(
-            "Rotation must be 90, 180 or 270 degrees."
-          );
-        }
-
-        options.rotation =
-          value as 90 | 180 | 270;
-      }
-
-      /* ---------------------------------------------
-       * FLIP
-       * --------------------------------------------- */
-
-      if (isFlipTool) {
-        options.flip =
-          flip;
-      }
-
-      /* ---------------------------------------------
-       * COMPRESSION
-       * --------------------------------------------- */
-
-      if (isCompressTool) {
-        options.quality =
-          quality;
-      }
-
-      /* ---------------------------------------------
-       * SPEED
-       * --------------------------------------------- */
-
-      if (isSpeedTool) {
-        const value =
-          Number(speed);
-
-        if (
-          !Number.isFinite(value) ||
-          value <= 0
-        ) {
-          throw new Error(
-            "Speed must be greater than 0."
-          );
-        }
-
-        options.speed =
-          value;
-      }
-
-      /* ---------------------------------------------
-       * VOLUME
-       * --------------------------------------------- */
-
-      if (isVolumeTool) {
-        const value =
-          Number(volume);
-
-        if (
-          !Number.isFinite(value) ||
-          value <= 0
-        ) {
-          throw new Error(
-            "Volume must be greater than 0."
-          );
-        }
-
-        options.volume =
-          value;
-      }
-
-      /* ---------------------------------------------
-       * FRAME / THUMBNAIL
-       * --------------------------------------------- */
-
-      if (
-        toolId ===
-          "video-frame-extractor" ||
-        toolId ===
-          "video-thumbnail-generator"
-      ) {
-        const value =
-          numberOrUndefined(
-            frameTime
-          ) ?? 0;
-
-        if (value < 0) {
-          throw new Error(
-            "Frame time cannot be negative."
-          );
-        }
-
-        options.frameTime =
-          value;
-      }
-
-      /* ---------------------------------------------
-       * PROCESS VIDEO
-       *
-       * IMPORTANT:
-       * Your actual engine signature is:
-       *
-       * processVideo(
-       *   toolId,
-       *   file,
-       *   options
-       * )
-       * --------------------------------------------- */
-
-      const output =
-        await processVideo(
-          toolId,
-          files[0],
-          options
-        );
-
-      if (!isCurrent()) return;
-
-      setProgress(100);
-      setVideoResult(output);
     } catch (err) {
-      if (!isCurrent()) return;
-
-      if (process.env.NODE_ENV !== "production") {
-        console.error("[VideoCompressor] processing error", err);
-      }
-
-      let message =
-        "Video processing failed on this device. Please try again or use a smaller video.";
-
-      if (err instanceof VideoProcessingError) {
-        message = err.message;
-      } else if (err instanceof Error) {
-        const lower = err.message.toLowerCase();
-        if (lower.includes("memory") || lower.includes("out of bounds")) {
-          message = "This video is too demanding for this device. Try a smaller or lower-resolution video.";
-        } else if (lower.includes("codec") || lower.includes("decoder") || lower.includes("invalid data")) {
-          message = "This video format or codec is not supported by the current video processor.";
-        } else if (lower.includes("load") || lower.includes("wasm")) {
-          message = "Video processor could not be loaded. Please check your connection and try again.";
-        } else if (lower.includes("read") || lower.includes("file")) {
-          message = "Unable to read this video. Please try another file.";
-        }
-      }
-
-      setError(message);
-      revokePreviewUrl();
-      setResult(null);
-      setImageResults([]);
-      setMetadata(null);
-      setProgress(0);
+      if (generationRef.current === generation) setError(getVideoToolErrorMessage(err));
     } finally {
-      if (processingGenerationRef.current === generation) {
-        processingControllerRef.current = null;
+      if (generationRef.current === generation) {
+        controllerRef.current = null;
         setLoading(false);
-        setMetadataLoading(false);
       }
     }
-  };
+  }
 
-  /* -------------------------------------------------
-   * DOWNLOAD VIDEO / AUDIO / GIF
-   * ------------------------------------------------- */
+  async function cancel() {
+    generationRef.current += 1;
+    controllerRef.current?.abort();
+    controllerRef.current = null;
+    await cancelVideoProcessing();
+    setLoading(false);
+    setProgress({ stage: "complete", progress: 0, message: "Processing cancelled." });
+  }
 
-  const downloadResult = () => {
-    if (!result) {
-      return;
-    }
+  function downloadBlob(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
-    const url =
-      URL.createObjectURL(
-        result.blob
-      );
-
-    const link =
-      document.createElement("a");
-
-    link.href = url;
-    link.download =
-      result.filename;
-
-    document.body.appendChild(link);
-
-    link.click();
-
-    link.remove();
-
-    URL.revokeObjectURL(url);
-  };
-
-  /* -------------------------------------------------
-   * DOWNLOAD METADATA
-   * ------------------------------------------------- */
-
-  const downloadMetadata = () => {
-    if (!metadata) {
-      return;
-    }
-
-    const blob =
-      new Blob(
-        [
-          JSON.stringify(
-            metadata,
-            null,
-            2
-          ),
-        ],
-        {
-          type: "application/json",
-        }
-      );
-
-    const url =
-      URL.createObjectURL(blob);
-
-    const link =
-      document.createElement("a");
-
-    link.href = url;
-
-    link.download =
-      `${files[0]?.name ?? "video"}-metadata.json`;
-
-    document.body.appendChild(link);
-
-    link.click();
-
-    link.remove();
-
-    URL.revokeObjectURL(url);
-  };
-
-  /* -------------------------------------------------
-   * RESULT TYPE
-   * ------------------------------------------------- */
-
-  const isAudioResult =
-    result?.mimeType.startsWith(
-      "audio/"
-    );
-
-  const isGifResult =
-    result?.mimeType ===
-    "image/gif";
-
-  /* -------------------------------------------------
-   * RENDER
-   * ------------------------------------------------- */
+  const canProcess = useMemo(() => files.length > 0 && !loading, [files.length, loading]);
 
   return (
-    <div className="w-full">
-      {/* -------------------------------------------
-       * HEADER
-       * ------------------------------------------- */}
-
-      <div className="mb-6">
-        <h2 className="text-2xl font-bold tracking-tight">
-          {getToolTitle()}
-        </h2>
-
+    <div className="w-full min-w-0 space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold tracking-tight">{title}</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Process your media directly in your
-          browser. Your files are not uploaded
-          to a server.
+          Your selected file is processed locally in your browser. It does not need to be uploaded to WorkAbhi&apos;s processing servers.
         </p>
       </div>
 
-      {/* -------------------------------------------
-       * FILE PICKER
-       * ------------------------------------------- */}
-
-      <div className="w-full min-w-0 overflow-hidden rounded-2xl border bg-background p-4 sm:p-5">
+      <div className="rounded-2xl border bg-background p-4 sm:p-6">
         <input
-          ref={fileInputRef}
+          ref={inputRef}
           type="file"
-          accept={
-            toolId ===
-            "gif-to-video"
-              ? "image/gif"
-              : VIDEO_ACCEPT
-          }
-          multiple={isMerger}
-          onChange={
-            handleFileChange
-          }
-          className="hidden"
+          accept={gifInput ? GIF_ACCEPT : VIDEO_ACCEPT}
+          multiple={merger}
+          onChange={handleFiles}
+          className="sr-only"
+          aria-label={`Select file for ${title}`}
         />
 
         <button
           type="button"
-          onClick={
-            openFilePicker
-          }
           disabled={loading}
-          className="flex min-h-[180px] w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition hover:bg-muted/50 disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={() => inputRef.current?.click()}
+          className="flex min-h-40 w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-8 text-center hover:bg-muted/40 disabled:opacity-50"
         >
-          <div className="mb-3 text-4xl">
-            🎬
-          </div>
-
-          <div className="font-semibold">
-            {files.length > 0
-              ? "Choose different file"
-              : "Choose file"}
-          </div>
-
-          <div className="mt-1 text-sm text-muted-foreground">
-            {isMerger
-              ? "Select 2 to 10 videos"
-              : toolId ===
-                  "gif-to-video"
-                ? "Select a GIF file"
-                : "Select a supported video file"}
-          </div>
+          <span className="text-4xl" aria-hidden="true">🎬</span>
+          <span className="mt-3 font-semibold">{files.length ? "Choose different file" : "Choose file"}</span>
+          <span className="mt-1 text-sm text-muted-foreground">
+            {merger ? "Select 2 or more videos" : gifInput ? "Select an animated GIF" : "Select a supported local video"}
+          </span>
         </button>
-
-        {/* SELECTED FILES */}
 
         {files.length > 0 && (
           <div className="mt-4 space-y-2">
-            {files.map(
-              (
-                file,
-                index
-              ) => (
-                <div
-                  key={`${file.name}-${file.size}-${index}`}
-                  className="flex min-w-0 items-center justify-between gap-3 overflow-hidden rounded-lg border px-3 py-3 sm:px-4"
-                >
-                  <div className="min-w-0">
-                    <p className="break-all text-sm font-medium">
-                      {file.name}
-                    </p>
-
-                    <p className="text-xs text-muted-foreground">
-                      {(
-                        file.size /
-                        (1024 *
-                          1024)
-                      ).toFixed(
-                        2
-                      )}{" "}
-                      MB
-                    </p>
-                  </div>
-                </div>
-              )
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* -------------------------------------------
-       * SETTINGS
-       * ------------------------------------------- */}
-
-      <div className="mt-5 w-full min-w-0 overflow-hidden rounded-2xl border bg-background p-4 sm:p-5">
-        <h3 className="text-lg font-semibold">
-          Settings
-        </h3>
-
-        {/* TRIM */}
-
-        {isTrimTool && (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                Start time (seconds)
-              </span>
-
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={
-                  trimStart
-                }
-                onChange={(e) =>
-                  setTrimStart(
-                    e.target.value
-                  )
-                }
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
-
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                End time (seconds)
-              </span>
-
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={
-                  trimEnd
-                }
-                onChange={(e) =>
-                  setTrimEnd(
-                    e.target.value
-                  )
-                }
-                placeholder="Example: 30"
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
+            {files.map((file, index) => (
+              <div key={`${file.name}-${file.size}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
+                <span className="min-w-0 break-all font-medium">{file.name}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{(file.size / 1048576).toFixed(1)} MB</span>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* COMPRESSION */}
-
-        {isCompressTool && (
-          <label className="mt-4 block space-y-2">
-            <span className="text-sm font-medium">
-              Compression quality
-            </span>
-
-            <select
-              value={
-                quality
-              }
-              onChange={(e) =>
-                setQuality(
-                  e.target
-                    .value as
-                    | "high"
-                    | "medium"
-                    | "low"
-                )
-              }
-              className="w-full rounded-lg border bg-background px-3 py-2"
-            >
-              <option value="high">
-                High quality
-              </option>
-
-              <option value="medium">
-                Balanced
-              </option>
-
-              <option value="low">
-                Smaller file
-              </option>
-            </select>
-          </label>
-        )}
-
-        {/* RESIZE */}
-
-        {isResizeTool && (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                Width (pixels)
-              </span>
-
-              <input
-                type="number"
-                min="2"
-                value={
-                  resizeWidth
-                }
-                onChange={(e) =>
-                  setResizeWidth(
-                    e.target.value
-                  )
-                }
-                placeholder="Example: 1280"
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
-
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                Height (optional)
-              </span>
-
-              <input
-                type="number"
-                min="2"
-                value={
-                  resizeHeight
-                }
-                onChange={(e) =>
-                  setResizeHeight(
-                    e.target.value
-                  )
-                }
-                placeholder="Optional"
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
+        {!metadataTool && !frameTool && toolId !== "mute-video" && toolId !== "extract-audio-from-video" && toolId !== "video-to-gif" && toolId !== "gif-to-video" && (
+          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="text-sm"><span className="mb-1 block font-medium">Quality</span><select value={quality} onChange={(e) => setQuality(e.target.value as VideoQuality)} className="w-full rounded-lg border bg-background px-3 py-2"><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="original">Very High</option></select></label>
+            <label className="text-sm"><span className="mb-1 block font-medium">Output</span><select value={format} onChange={(e) => setFormat(e.target.value as typeof format)} className="w-full rounded-lg border bg-background px-3 py-2"><option value="mp4">MP4</option><option value="webm">WebM</option><option value="mov">MOV</option><option value="mkv">MKV</option></select></label>
+            {(toolId === "video-trimmer" || toolId === "video-cutter") && <><label className="text-sm"><span className="mb-1 block font-medium">Start (seconds)</span><input inputMode="decimal" value={start} onChange={(e) => setStart(e.target.value)} className="w-full rounded-lg border px-3 py-2" /></label><label className="text-sm"><span className="mb-1 block font-medium">End (seconds)</span><input inputMode="decimal" value={end} onChange={(e) => setEnd(e.target.value)} className="w-full rounded-lg border px-3 py-2" /></label></>}
+            {toolId === "video-resizer" && <><label className="text-sm"><span className="mb-1 block font-medium">Width</span><input inputMode="numeric" value={width} onChange={(e) => setWidth(e.target.value)} placeholder="e.g. 1280" className="w-full rounded-lg border px-3 py-2" /></label><label className="text-sm"><span className="mb-1 block font-medium">Height</span><input inputMode="numeric" value={height} onChange={(e) => setHeight(e.target.value)} placeholder="e.g. 720" className="w-full rounded-lg border px-3 py-2" /></label></>}
+            {toolId === "video-cropper" && <><label className="text-sm"><span className="mb-1 block font-medium">Left</span><input inputMode="numeric" value={cropLeft} onChange={(e) => setCropLeft(e.target.value)} className="w-full rounded-lg border px-3 py-2" /></label><label className="text-sm"><span className="mb-1 block font-medium">Top</span><input inputMode="numeric" value={cropTop} onChange={(e) => setCropTop(e.target.value)} className="w-full rounded-lg border px-3 py-2" /></label><label className="text-sm"><span className="mb-1 block font-medium">Crop width</span><input inputMode="numeric" value={cropWidth} onChange={(e) => setCropWidth(e.target.value)} placeholder="e.g. 1080" className="w-full rounded-lg border px-3 py-2" /></label><label className="text-sm"><span className="mb-1 block font-medium">Crop height</span><input inputMode="numeric" value={cropHeight} onChange={(e) => setCropHeight(e.target.value)} placeholder="e.g. 1080" className="w-full rounded-lg border px-3 py-2" /></label></>}
+            {toolId === "video-rotator" && <label className="text-sm"><span className="mb-1 block font-medium">Rotation</span><select value={rotation} onChange={(e) => setRotation(Number(e.target.value) as 90 | 180 | 270)} className="w-full rounded-lg border px-3 py-2"><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>}
+            {toolId === "video-flipper" && <label className="text-sm"><span className="mb-1 block font-medium">Direction</span><select value={flip} onChange={(e) => setFlip(e.target.value as typeof flip)} className="w-full rounded-lg border px-3 py-2"><option value="horizontal">Horizontal</option><option value="vertical">Vertical</option></select></label>}
+            {toolId === "video-speed-changer" && <label className="text-sm"><span className="mb-1 block font-medium">Speed</span><input inputMode="decimal" value={speed} onChange={(e) => setSpeed(e.target.value)} className="w-full rounded-lg border px-3 py-2" placeholder="0.25 - 4" /></label>}
+            {toolId === "video-volume-booster" && <label className="text-sm"><span className="mb-1 block font-medium">Volume multiplier</span><input inputMode="decimal" value={volume} onChange={(e) => setVolume(e.target.value)} className="w-full rounded-lg border px-3 py-2" placeholder="1 - 4" /></label>}
           </div>
         )}
 
-        {/* CROP */}
+        {(toolId === "extract-audio-from-video") && <div className="mt-5 max-w-xs"><label className="text-sm"><span className="mb-1 block font-medium">Audio format</span><select value={audioFormat} onChange={(e) => setAudioFormat(e.target.value as typeof audioFormat)} className="w-full rounded-lg border bg-background px-3 py-2"><option value="wav">WAV</option><option value="mp3">MP3</option></select></label></div>}
+        {frameTool && <div className="mt-5 grid gap-4 sm:grid-cols-3"><label className="text-sm"><span className="mb-1 block font-medium">Frame time (s)</span><input value={frameTime} onChange={(e) => setFrameTime(e.target.value)} className="w-full rounded-lg border px-3 py-2" /></label><label className="text-sm"><span className="mb-1 block font-medium">FPS</span><input value={fps} onChange={(e) => setFps(e.target.value)} className="w-full rounded-lg border px-3 py-2" /></label><label className="text-sm"><span className="mb-1 block font-medium">Max frames</span><input value={maxFrames} onChange={(e) => setMaxFrames(e.target.value)} className="w-full rounded-lg border px-3 py-2" /></label></div>}
 
-        {isCropTool && (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                X position
-              </span>
+        {!metadataTool && <label className="mt-5 flex items-center gap-2 text-sm"><input type="checkbox" checked={directToDisk} onChange={(e) => setDirectToDisk(e.target.checked)} /> Save large output directly to disk when supported</label>}
 
-              <input
-                type="number"
-                min="0"
-                value={
-                  cropX
-                }
-                onChange={(e) =>
-                  setCropX(
-                    e.target.value
-                  )
-                }
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
-
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                Y position
-              </span>
-
-              <input
-                type="number"
-                min="0"
-                value={
-                  cropY
-                }
-                onChange={(e) =>
-                  setCropY(
-                    e.target.value
-                  )
-                }
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
-
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                Width
-              </span>
-
-              <input
-                type="number"
-                min="2"
-                value={
-                  cropWidth
-                }
-                onChange={(e) =>
-                  setCropWidth(
-                    e.target.value
-                  )
-                }
-                placeholder="Example: 640"
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
-
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                Height
-              </span>
-
-              <input
-                type="number"
-                min="2"
-                value={
-                  cropHeight
-                }
-                onChange={(e) =>
-                  setCropHeight(
-                    e.target.value
-                  )
-                }
-                placeholder="Example: 360"
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
-          </div>
-        )}
-
-        {/* ROTATION */}
-
-        {isRotateTool && (
-          <label className="mt-4 block space-y-2">
-            <span className="text-sm font-medium">
-              Rotation
-            </span>
-
-            <select
-              value={
-                rotation
-              }
-              onChange={(e) =>
-                setRotation(
-                  e.target.value
-                )
-              }
-              className="w-full rounded-lg border bg-background px-3 py-2"
-            >
-              <option value="90">
-                90°
-              </option>
-
-              <option value="180">
-                180°
-              </option>
-
-              <option value="270">
-                270°
-              </option>
-            </select>
-          </label>
-        )}
-
-        {/* FLIP */}
-
-        {isFlipTool && (
-          <label className="mt-4 block space-y-2">
-            <span className="text-sm font-medium">
-              Flip direction
-            </span>
-
-            <select
-              value={
-                flip
-              }
-              onChange={(e) =>
-                setFlip(
-                  e.target
-                    .value as
-                    | "horizontal"
-                    | "vertical"
-                )
-              }
-              className="w-full rounded-lg border bg-background px-3 py-2"
-            >
-              <option value="horizontal">
-                Horizontal
-              </option>
-
-              <option value="vertical">
-                Vertical
-              </option>
-            </select>
-          </label>
-        )}
-
-        {/* SPEED */}
-
-        {isSpeedTool && (
-          <label className="mt-4 block space-y-2">
-            <span className="text-sm font-medium">
-              Playback speed
-            </span>
-
-            <select
-              value={
-                speed
-              }
-              onChange={(e) =>
-                setSpeed(
-                  e.target.value
-                )
-              }
-              className="w-full rounded-lg border bg-background px-3 py-2"
-            >
-              <option value="0.25">
-                0.25×
-              </option>
-
-              <option value="0.5">
-                0.5×
-              </option>
-
-              <option value="0.75">
-                0.75×
-              </option>
-
-              <option value="1">
-                1×
-              </option>
-
-              <option value="1.25">
-                1.25×
-              </option>
-
-              <option value="1.5">
-                1.5×
-              </option>
-
-              <option value="2">
-                2×
-              </option>
-
-              <option value="4">
-                4×
-              </option>
-            </select>
-          </label>
-        )}
-
-        {/* VOLUME */}
-
-        {isVolumeTool && (
-          <label className="mt-4 block space-y-2">
-            <span className="text-sm font-medium">
-              Volume multiplier
-            </span>
-
-            <select
-              value={
-                volume
-              }
-              onChange={(e) =>
-                setVolume(
-                  e.target.value
-                )
-              }
-              className="w-full rounded-lg border bg-background px-3 py-2"
-            >
-              <option value="1.5">
-                1.5×
-              </option>
-
-              <option value="2">
-                2×
-              </option>
-
-              <option value="3">
-                3×
-              </option>
-
-              <option value="4">
-                4×
-              </option>
-
-              <option value="5">
-                5×
-              </option>
-            </select>
-          </label>
-        )}
-
-        {/* FRAME */}
-
-        {isFrameTool && (
-          <label className="mt-4 block space-y-2">
-            <span className="text-sm font-medium">
-              Frame time (seconds)
-            </span>
-
-            <input
-              type="number"
-              min="0"
-              step="0.1"
-              value={
-                frameTime
-              }
-              onChange={(e) =>
-                setFrameTime(
-                  e.target.value
-                )
-              }
-              className="w-full rounded-lg border bg-background px-3 py-2"
-            />
-          </label>
-        )}
-
-        {/* VIDEO TO IMAGES */}
-
-        {isImagesTool && (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                Frames per second
-              </span>
-
-              <input
-                type="number"
-                min="0.1"
-                max="10"
-                step="0.1"
-                value={
-                  extractFps
-                }
-                onChange={(e) =>
-                  setExtractFps(
-                    e.target.value
-                  )
-                }
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
-
-            <label className="space-y-2">
-              <span className="text-sm font-medium">
-                Maximum frames
-              </span>
-
-              <input
-                type="number"
-                min="1"
-                max="100"
-                value={
-                  maxFrames
-                }
-                onChange={(e) =>
-                  setMaxFrames(
-                    e.target.value
-                  )
-                }
-                className="w-full rounded-lg border bg-background px-3 py-2"
-              />
-            </label>
-          </div>
-        )}
-
-        {/* INFORMATION */}
-
-        {isMerger && (
-          <p className="mt-4 text-sm text-muted-foreground">
-            Select multiple videos to merge
-            them into one MP4 video.
-          </p>
-        )}
-
-        {isConversionTool && (
-          <p className="mt-4 text-sm text-muted-foreground">
-            Conversion is performed locally
-            using FFmpeg.
-          </p>
-        )}
-
-        {isAudioExtractionTool && (
-          <p className="mt-4 text-sm text-muted-foreground">
-            Audio will be extracted as an MP3
-            file.
-          </p>
-        )}
-
-        {isMetadataTool && (
-          <p className="mt-4 text-sm text-muted-foreground">
-            Video metadata is read locally in
-            your browser.
-          </p>
-        )}
-
-        {/* -------------------------------------------
-         * ACTIONS
-         * ------------------------------------------- */}
-
-        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-          <button
-            type="button"
-            onClick={
-              handleProcess
-            }
-            disabled={
-              loading ||
-              metadataLoading ||
-              files.length === 0
-            }
-            className="flex-1 rounded-xl bg-primary px-5 py-3 font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading ||
-            metadataLoading
-              ? progress > 0
-                ? `Processing ${progress}%`
-                : "Preparing..."
-              : isMetadataTool
-                ? "Read Metadata"
-                : "Process Video"}
-          </button>
-
-          <button
-            type="button"
-            onClick={
-              clearFiles
-            }
-            disabled={files.length === 0 && !loading && !metadataLoading}
-            className="rounded-xl border px-5 py-3 font-semibold transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading || metadataLoading ? "Cancel" : "Clear"}
-          </button>
+        <div className="mt-6 flex flex-wrap gap-3">
+          {!loading ? <button type="button" disabled={!canProcess} onClick={process} className="rounded-lg bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground disabled:opacity-50">Process</button> : <button type="button" onClick={() => void cancel()} className="rounded-lg border px-5 py-2.5 text-sm font-semibold">Cancel</button>}
+          {files.length > 0 && <button type="button" disabled={loading} onClick={() => { resetResults(); setFiles([]); }} className="rounded-lg border px-5 py-2.5 text-sm font-semibold">Clear</button>}
         </div>
-
-        {/* -------------------------------------------
-         * PROGRESS
-         * ------------------------------------------- */}
-
-        {(loading ||
-          metadataLoading) && (
-          <div className="mt-5" aria-live="polite">
-            <div className="mb-2 flex justify-between gap-3 text-xs text-muted-foreground">
-              <span className="min-w-0 break-words">
-                {progress > 0 ? "Processing video..." : "Preparing video..."}
-              </span>
-
-              <span className="shrink-0">
-                {progress > 0 ? `${progress}%` : ""}
-              </span>
-            </div>
-
-            <div className="h-2 overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-primary transition-all duration-300"
-                style={{
-                  width: `${progress}%`,
-                }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* -------------------------------------------
-         * ERROR
-         * ------------------------------------------- */}
-
-        {error && (
-          <div className="mt-5 rounded-xl border border-destructive/30 bg-destructive/5 p-4">
-            <p className="text-sm font-medium text-destructive">
-              {error}
-            </p>
-          </div>
-        )}
       </div>
 
-      {/* -------------------------------------------
-       * VIDEO / AUDIO / GIF RESULT
-       * ------------------------------------------- */}
+      {progress && loading && <div className="rounded-xl border p-4"><div className="flex justify-between gap-4 text-sm"><span>{progress.message}</span><span>{Math.round(progress.progress * 100)}%</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${Math.round(progress.progress * 100)}%` }} /></div></div>}
 
-      {result &&
-        previewUrl && (
-          <section className="mt-6 rounded-2xl border bg-background p-5">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-lg font-semibold">
-                  Result
-                </h3>
+      {error && <div role="alert" className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm">{error}</div>}
 
-                <p className="text-sm text-muted-foreground">
-                  {result.filename}
-                </p>
-              </div>
+      {metadata && <div className="grid gap-3 rounded-xl border p-4 sm:grid-cols-2 lg:grid-cols-3">{([['Format', metadata.format], ['Duration', metadata.duration == null ? 'Unknown' : `${metadata.duration.toFixed(2)} s`], ['Resolution', metadata.width && metadata.height ? `${metadata.width} × ${metadata.height}` : 'Unknown'], ['Video codec', metadata.videoCodec ?? 'Unknown'], ['Audio codec', metadata.audioCodec ?? 'None'], ['Frame rate', metadata.frameRate == null ? 'Unknown' : `${metadata.frameRate.toFixed(2)} fps`]] as const).map(([label, value]) => <div key={label}><div className="text-xs text-muted-foreground">{label}</div><div className="mt-1 break-words font-medium">{value}</div></div>)}</div>}
 
-              <button
-                type="button"
-                onClick={
-                  downloadResult
-                }
-                className="rounded-xl bg-primary px-5 py-2.5 font-semibold text-primary-foreground transition hover:opacity-90"
-              >
-                Download
-              </button>
-            </div>
-
-            {/* AUDIO */}
-
-            {isAudioResult && (
-              <audio
-                className="mt-5 w-full"
-                src={
-                  previewUrl
-                }
-                controls
-              />
-            )}
-
-            {/* GIF */}
-
-            {isGifResult && (
-              <div className="mt-5 overflow-hidden rounded-xl bg-black">
-                <img
-                  src={
-                    previewUrl
-                  }
-                  alt="Generated GIF"
-                  className="mx-auto max-h-[500px] w-full object-contain"
-                />
-              </div>
-            )}
-
-            {/* VIDEO */}
-
-            {!isAudioResult &&
-              !isGifResult && (
-                <video
-                  className="mt-5 max-h-[500px] w-full rounded-xl bg-black"
-                  src={
-                    previewUrl
-                  }
-                  controls
-                  playsInline
-                />
-              )}
-          </section>
+      {previewUrl && result && !result.directToDisk && <div className="rounded-xl border p-4">
+        {isGifOutput ? (
+          <img src={previewUrl} alt={result.filename} className="max-h-[520px] w-full rounded-lg bg-muted/20 object-contain" />
+        ) : (
+          <video controls playsInline preload="metadata" src={previewUrl} className="max-h-[520px] w-full rounded-lg bg-black" />
         )}
+        <button type="button" onClick={() => downloadBlob(result.blob, result.filename)} className="mt-4 w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground">Download {result.filename}</button>
+      </div>}
 
-      {/* -------------------------------------------
-       * EXTRACTED IMAGES
-       * ------------------------------------------- */}
-
-      {imageResults.length >
-        0 && (
-        <VideoImageResults
-          key={imageResults
-            .map(
-              (image) =>
-                image.filename
-            )
-            .join("|")}
-          images={
-            imageResults
-          }
-        />
-      )}
-
-      {/* -------------------------------------------
-       * METADATA
-       * ------------------------------------------- */}
-
-      {metadata && (
-        <section className="mt-6 rounded-2xl border bg-background p-5">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h3 className="text-lg font-semibold">
-                Video Metadata
-              </h3>
-
-              <p className="text-sm text-muted-foreground">
-                Technical information about
-                your media file.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={
-                downloadMetadata
-              }
-              className="rounded-xl border px-4 py-2 text-sm font-medium transition hover:bg-muted"
-            >
-              Download JSON
-            </button>
-          </div>
-
-          <pre className="mt-5 max-h-[500px] overflow-auto rounded-xl bg-muted p-4 text-xs">
-            {JSON.stringify(
-              metadata,
-              null,
-              2
-            )}
-          </pre>
-        </section>
-      )}
-
-      {/* -------------------------------------------
-       * PRIVACY
-       * ------------------------------------------- */}
-
-      <div className="mt-6 rounded-xl border bg-muted/30 p-4 text-center">
-        <p className="text-xs text-muted-foreground">
-          🔒 Your file is processed locally in
-          your browser. WorkAbhi does not upload
-          your media file to a server for
-          processing.
-        </p>
-      </div>
+      {images.length > 0 && <div className="rounded-xl border p-4"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{images.map((item, index) => <div key={item.filename} className="overflow-hidden rounded-lg border"><img src={imageUrls[index]} alt={item.filename} className="aspect-video w-full object-contain bg-muted/20" /><button type="button" onClick={() => downloadBlob(item.blob, item.filename)} className="w-full border-t px-3 py-2 text-sm font-medium">Download</button></div>)}</div></div>}
     </div>
   );
 }

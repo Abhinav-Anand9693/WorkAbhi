@@ -10,6 +10,10 @@ export function getToolById(
   );
 }
 
+export function resolveTool(id: string) {
+  return getToolById(id);
+}
+
 export function getToolsByCategory(
   category: Tool["category"]
 ): Tool[] {
