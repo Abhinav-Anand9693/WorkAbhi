@@ -16,12 +16,13 @@ import {
   canEncodeAudio,
 } from "mediabunny";
 
-import type { AudioOutputFormat, VideoMetadata, VideoOutput, VideoProcessOptions, VideoProgress, VideoQuality, VideoToolId } from "@/engine/video/videoTypes";
-import { DEFAULT_VIDEO_LIMITS, VideoEngineError } from "@/engine/video/videoTypes";
-import { outputFormatInstance, outputMimeType } from "@/engine/video/videoCapabilities";
-import { planVideoOperation } from "@/engine/video/videoPlanner";
-import { createVideoOutput, getOutputBuffer } from "@/engine/video/videoOutput";
-import { gifToVideo, videoToGif } from "@/engine/video/adapters/gifAdapter";
+import type { AudioOutputFormat, VideoMetadata, VideoOutput, VideoProcessOptions, VideoProgress, VideoQuality, VideoToolId } from "./videoTypes";
+import { DEFAULT_VIDEO_LIMITS, VideoEngineError } from "./videoTypes";
+import { outputFormatInstance, outputMimeType } from "./videoCapabilities";
+import { planVideoOperation } from "./videoPlanner";
+import { createVideoOutput, getOutputBuffer } from "./videoOutput";
+import { gifToVideo, videoToGif } from "./adapters/gifAdapter";
+import { canUseVideoNativeFallback, processVideoWithNativeFallback } from "./videoNativeFallback";
 
 let activeConversion: Conversion | null = null;
 let activeOutput: Output | null = null;
@@ -84,6 +85,25 @@ function inputFor(file: File): Input {
   return new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
 }
 
+async function ensureBrowserAudioEncoders(): Promise<void> {
+  if (!(await canEncodeAudio("aac"))) {
+    const { registerAacEncoder } = await import("@mediabunny/aac-encoder");
+    registerAacEncoder();
+  }
+}
+
+function hasNativeWebCodecs(): boolean {
+  return typeof VideoDecoder !== "undefined" && typeof VideoEncoder !== "undefined";
+}
+
+function shouldUseNativeFallback(error: unknown): boolean {
+  if (!canUseVideoNativeFallback()) return false;
+  if (error instanceof VideoEngineError) {
+    return ["BROWSER_UNSUPPORTED", "NOT_DECODABLE", "NOT_ENCODABLE", "UNSUPPORTED_CODEC", "PROCESSING_FAILED"].includes(error.code);
+  }
+  return true;
+}
+
 function baseName(name: string): string {
   return name.replace(/\.[^.]+$/, "");
 }
@@ -127,13 +147,7 @@ async function readMetadata(input: Input, file: File): Promise<VideoMetadata> {
   };
 }
 
-export async function getVideoMetadata(
-  file: File,
-  options: {
-    signal?: AbortSignal;
-    onProgress?: VideoProcessOptions["onProgress"];
-  } = {},
-): Promise<VideoMetadata> {
+export async function getVideoMetadata(file: File, options: Pick<VideoProcessOptions, "signal" | "onProgress"> = {}): Promise<VideoMetadata> {
   validateFile(file);
   checkAbort(options.signal);
   emit({ ...options }, { stage: "reading", progress: 0, message: "Reading video metadata..." });
@@ -221,6 +235,10 @@ function makeSpeedAudioProcessor(speed: number) {
 
 async function convertSingle(file: File, toolId: VideoToolId, options: VideoProcessOptions): Promise<VideoOutput> {
   validateFile(file);
+  if (!hasNativeWebCodecs()) {
+    return processVideoWithNativeFallback(file, toolId, options);
+  }
+  await ensureBrowserAudioEncoders();
   const plan = planVideoOperation(toolId, options);
   const input = inputFor(file);
   activeInput = input;
@@ -240,14 +258,9 @@ async function convertSingle(file: File, toolId: VideoToolId, options: VideoProc
       const outputFormat = outputFormatInstance(format);
       const needsVideo = toolId !== "extract-audio-from-video";
       const needsAudio = metadata.hasAudio && toolId !== "mute-video";
-      const targetContext = await createVideoOutputForTool(
-        format,
-        filenameFor(file, format),
-        options.saveDirectlyToDisk === true,
-      );
-      const conversionOutput = targetContext.output;
-      output = conversionOutput;
-      activeOutput = conversionOutput;
+      const targetContext = await createVideoOutputForTool(format, filenameFor(file, format), options.saveDirectlyToDisk === true);
+      output = targetContext.output;
+      activeOutput = output;
 
       const videoNeedsEncoding = Boolean(
         needsVideo && (
@@ -324,7 +337,7 @@ async function convertSingle(file: File, toolId: VideoToolId, options: VideoProc
 
       conversion = await Conversion.init({
         input,
-        output: conversionOutput,
+        output,
         tracks: "primary",
         video: needsVideo ? videoOptions : { discard: true },
         audio: needsAudio ? audioOptions : { discard: true },
@@ -338,7 +351,7 @@ async function convertSingle(file: File, toolId: VideoToolId, options: VideoProc
         throw new VideoEngineError("UNSUPPORTED_CODEC", "This browser cannot create the requested output from this file.");
       }
 
-      const stopWriteListener = conversionOutput.target.on("write", ({ end }: { start: number; end: number }) => {
+      const stopWriteListener = output.target.on("write", ({ end }: { start: number; end: number }) => {
         emit(options, { stage: "writing", progress: 0.95, outputBytes: end, message: "Writing output..." });
       });
       conversion.onProgress = (progress, processedTime) => {
@@ -452,6 +465,7 @@ export async function extractVideoImages(file: File, fps: number, maxFrames: num
 }
 
 export async function processVideo(toolId: VideoToolId, file: File, options: VideoProcessOptions = {}): Promise<VideoOutput> {
+  validateFile(file);
   checkAbort(options.signal);
   if (toolId === "video-to-gif") {
     const blob = await videoToGif(file, options);
@@ -461,14 +475,25 @@ export async function processVideo(toolId: VideoToolId, file: File, options: Vid
     const blob = await gifToVideo(file, options);
     return { blob, filename: `${baseName(file.name)}-workabhi.mp4`, mimeType: "video/mp4", size: blob.size };
   }
-  validateFile(file);
   if (toolId === "video-frame-extractor" || toolId === "video-thumbnail-generator" || toolId === "video-to-images") {
     throw new VideoEngineError("INVALID_OPTIONS", "Use the frame extraction API for this tool.");
   }
   if (toolId === "extract-audio-from-video") {
     return extractAudio(file, options);
   }
-  return convertSingle(file, toolId, options);
+  try {
+    return await convertSingle(file, toolId, options);
+  } catch (error) {
+    if (shouldUseNativeFallback(error)) {
+      try {
+        return await processVideoWithNativeFallback(file, toolId, options);
+      } catch (fallbackError) {
+        // Keep the original codec/engine error if the compatibility path also fails.
+        throw error instanceof VideoEngineError ? error : fallbackError;
+      }
+    }
+    throw error;
+  }
 }
 
 async function extractAudio(file: File, options: VideoProcessOptions): Promise<VideoOutput> {
@@ -549,9 +574,7 @@ export async function mergeVideos(files: File[], options: VideoProcessOptions = 
   checkAbort(options.signal);
 
   const inputs = files.map(inputFor);
-  const metadata: VideoMetadata[] = await Promise.all(
-    inputs.map((input, index) => readMetadata(input, files[index])),
-  );
+  const metadata = await Promise.all(inputs.map((input, index) => readMetadata(input, files[index])));
   const format = options.outputFormat ?? "mp4";
   const outputFormat = outputFormatInstance(format);
   const outputContext = await createVideoOutput(format, `merged-video-workabhi.${format}`, options.saveDirectlyToDisk === true);
@@ -559,15 +582,15 @@ export async function mergeVideos(files: File[], options: VideoProcessOptions = 
   const target = outputContext.bufferTarget;
   activeOutput = output;
   const q = quality(options.quality);
-  const width = Math.max(...metadata.map((m: VideoMetadata) => m.width ?? 0), 2);
-  const height = Math.max(...metadata.map((m: VideoMetadata) => m.height ?? 0), 2);
+  const width = Math.max(...metadata.map((m) => m.width ?? 0), 2);
+  const height = Math.max(...metadata.map((m) => m.height ?? 0), 2);
   const videoCodec = await chooseVideoCodec(outputFormat, Math.min(width, 3840), Math.min(height, 2160), q);
   const audioCodec = await chooseAudioCodec(outputFormat);
   if (!videoCodec) throw new VideoEngineError("NOT_ENCODABLE", "No compatible video encoder is available for merging on this browser.");
-  if (metadata.some((m: VideoMetadata) => m.hasAudio) && !audioCodec) throw new VideoEngineError("NOT_ENCODABLE", "No compatible audio encoder is available for merging on this browser.");
+  if (metadata.some((m) => m.hasAudio) && !audioCodec) throw new VideoEngineError("NOT_ENCODABLE", "No compatible audio encoder is available for merging on this browser.");
 
   const videoSource = new (await import("mediabunny")).VideoSampleSource({ codec: videoCodec, quality: q });
-  const audioSource = audioCodec && metadata.some((m: VideoMetadata) => m.hasAudio)
+  const audioSource = audioCodec && metadata.some((m) => m.hasAudio)
     ? new (await import("mediabunny")).AudioSampleSource({ codec: audioCodec, quality: q })
     : null;
   output.addVideoTrack(videoSource);
@@ -600,7 +623,7 @@ export async function mergeVideos(files: File[], options: VideoProcessOptions = 
         }
       }
       offset += duration;
-      emit(options, { stage: "encoding", progress: (fileIndex + 1) / inputs.length, processedSeconds: offset, duration: metadata.reduce((sum: number, item: VideoMetadata) => sum + (item.duration ?? 0), 0), message: `Merging video ${fileIndex + 1} of ${inputs.length}...` });
+      emit(options, { stage: "encoding", progress: (fileIndex + 1) / inputs.length, processedSeconds: offset, duration: metadata.reduce((sum, item) => sum + (item.duration ?? 0), 0), message: `Merging video ${fileIndex + 1} of ${inputs.length}...` });
     }
     await output.finalize();
     if (outputContext.directToDisk) {
