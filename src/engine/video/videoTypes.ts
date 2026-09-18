@@ -44,6 +44,17 @@ export interface VideoProgress {
   message: string;
 }
 
+/**
+ * Structural wrapper around the File System Access API destination.
+ *
+ * Mediabunny's StreamTarget is intentionally compatible with
+ * FileSystemWritableFileStream through StreamTargetChunk.
+ */
+/** @deprecated The user-facing Save File Picker is no longer used. */
+export interface VideoSaveFileHandle {
+  createWritable(): Promise<WritableStream<unknown>>;
+}
+
 export interface VideoProcessOptions {
   quality?: VideoQuality;
   outputFormat?: VideoOutputFormat;
@@ -52,7 +63,7 @@ export interface VideoProcessOptions {
   height?: number;
   fit?: "contain" | "cover" | "fill";
   crop?: { left: number; top: number; width: number; height: number };
-  rotation?: 90 | 180 | 270;
+  rotation?: 0 | 90 | 180 | 270;
   flip?: "horizontal" | "vertical";
   start?: number;
   end?: number;
@@ -62,11 +73,19 @@ export interface VideoProcessOptions {
   fps?: number;
   maxFrames?: number;
   hardwareAcceleration?: VideoHardwarePreference;
-  /** Prefer remux/stream-copy whenever the requested operation allows it. */
   preferCopy?: boolean;
-  /** Use the File System Access API when available for large outputs. */
   saveDirectlyToDisk?: boolean;
+  largeFileStrategy?: "auto" | "memory" | "disk";
+  targetSizeBytes?: number;
+  /** Stream used for an automatic browser download. */
+  downloadStream?: WritableStream<Uint8Array> | null;
+  /** True when output is being sent to the browser download stream. */
+  streamDownload?: boolean;
+  /** Legacy fields kept for compatibility with older callers. */
+  saveFileHandle?: VideoSaveFileHandle | null;
   signal?: AbortSignal;
+  /** Optional identifier for precise cancellation of a concurrent video job. */
+  jobId?: string;
   onProgress?: (progress: VideoProgress) => void;
 }
 
@@ -75,6 +94,9 @@ export interface VideoOutput {
   filename: string;
   mimeType: string;
   size: number;
+  /** True when the output was streamed into the browser download manager. */
+  streamedDownload?: boolean;
+  /** @deprecated kept for compatibility; no Save File Picker is used. */
   directToDisk?: boolean;
 }
 
@@ -138,6 +160,9 @@ export type VideoErrorCode =
   | "OUTPUT_FAILED"
   | "BROWSER_UNSUPPORTED"
   | "INVALID_OPTIONS"
+  | "DECODING_FAILED"
+  | "ENCODING_FAILED"
+  | "TIMEOUT"
   | "UNKNOWN";
 
 export class VideoEngineError extends Error {
@@ -165,13 +190,13 @@ export interface VideoEngineLimits {
 }
 
 export const DEFAULT_VIDEO_LIMITS: VideoEngineLimits = {
-  maxInputBytes: 250 * 1024 * 1024,
+  maxInputBytes: 8 * 1024 * 1024 * 1024,
   maxMergeFiles: 12,
-  maxMergeBytes: 500 * 1024 * 1024,
+  maxMergeBytes: 8 * 1024 * 1024 * 1024,
   maxPixels: 3840 * 2160,
   maxExtractFrames: 300,
   maxExtractDimension: 1920,
   maxGifFrames: 180,
   maxGifDimension: 720,
-  maxInMemoryOutputBytes: 100 * 1024 * 1024,
+  maxInMemoryOutputBytes: 256 * 1024 * 1024,
 };

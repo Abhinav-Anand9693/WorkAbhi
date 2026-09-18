@@ -1,26 +1,23 @@
 import type { VideoOutput, VideoProcessOptions, VideoProgress, VideoToolId } from "./videoTypes";
 import { VideoEngineError } from "./videoTypes";
+import { resolveVideoTransformPlan } from "./videoTransform";
 
-interface FallbackResult extends VideoOutput {
-  fallback: true;
-}
+interface FallbackResult extends VideoOutput { fallback: true }
+
+const MAX_FALLBACK_OUTPUT_BYTES = 256 * 1024 * 1024;
+const MAX_FALLBACK_DURATION_SECONDS = 20 * 60;
+const MEDIA_EVENT_TIMEOUT_MS = 45_000;
 
 function emit(options: VideoProcessOptions, progress: VideoProgress): void {
-  options.onProgress?.({
-    ...progress,
-    progress: Math.max(0, Math.min(1, progress.progress)),
-  });
+  const p = Math.max(0, Math.min(1, progress.progress));
+  options.onProgress?.({ ...progress, progress: p });
 }
 
 function checkAbort(signal?: AbortSignal): void {
-  if (signal?.aborted) {
-    throw new VideoEngineError("CANCELLED", "Video processing was cancelled.");
-  }
+  if (signal?.aborted) throw new VideoEngineError("CANCELLED", "Video processing was cancelled.");
 }
 
-function baseName(name: string): string {
-  return name.replace(/\.[^.]+$/, "");
-}
+function baseName(name: string): string { return name.replace(/\.[^.]+$/, ""); }
 
 function qualityBitrate(level: VideoProcessOptions["quality"], pixels: number): number {
   const perPixel = level === "low" ? 0.035 : level === "high" ? 0.12 : level === "original" ? 0.18 : 0.07;
@@ -30,63 +27,54 @@ function qualityBitrate(level: VideoProcessOptions["quality"], pixels: number): 
 
 function chooseRecorderMime(preferred: VideoProcessOptions["outputFormat"]): { mimeType: string; extension: "mp4" | "webm" } {
   const candidates: string[] = [];
-
   if (preferred === "mp4" || preferred === "mov" || preferred === "mkv" || !preferred) {
-    candidates.push(
-      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-      "video/mp4;codecs=avc1,mp4a.40.2",
-      "video/mp4",
-    );
+    candidates.push("video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4;codecs=avc1,mp4a.40.2", "video/mp4");
   }
-
-  candidates.push(
-    "video/webm;codecs=vp9,opus",
-    "video/webm;codecs=vp8,opus",
-    "video/webm",
-  );
-
+  candidates.push("video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm");
   for (const mimeType of candidates) {
     try {
-      if (MediaRecorder.isTypeSupported(mimeType)) {
-        return {
-          mimeType,
-          extension: mimeType.startsWith("video/mp4") ? "mp4" : "webm",
-        };
+      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(mimeType)) {
+        return { mimeType, extension: mimeType.startsWith("video/mp4") ? "mp4" : "webm" };
       }
-    } catch {
-      // Continue with the next candidate.
-    }
+    } catch { /* try next */ }
   }
-
-  throw new VideoEngineError(
-    "BROWSER_UNSUPPORTED",
-    "This mobile browser cannot create a compatible video recording format.",
-  );
+  throw new VideoEngineError("BROWSER_UNSUPPORTED", "This browser cannot create a compatible native video recording format.");
 }
 
 function supportsFallback(): boolean {
-  if (typeof window === "undefined") return false;
+  if (typeof window === "undefined" || typeof document === "undefined") return false;
   if (typeof MediaRecorder === "undefined") return false;
   const canvas = document.createElement("canvas");
   return typeof canvas.captureStream === "function";
 }
 
-function waitForEvent(target: EventTarget, event: string, signal?: AbortSignal): Promise<void> {
+function waitForMediaReady(video: HTMLVideoElement, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const onAbort = () => {
+    let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       cleanup();
-      reject(new VideoEngineError("CANCELLED", "Video processing was cancelled."));
-    };
-    const onEvent = () => {
-      cleanup();
-      resolve();
-    };
+      reject(new VideoEngineError("TIMEOUT", "The browser media decoder did not load the video in time."));
+    }, MEDIA_EVENT_TIMEOUT_MS);
     const cleanup = () => {
-      target.removeEventListener(event, onEvent);
-      signal?.removeEventListener("abort", onAbort);
+      if (timer) clearTimeout(timer);
+      timer = null;
+      video.removeEventListener("loadedmetadata", onReady);
+      video.removeEventListener("loadeddata", onReady);
+      video.removeEventListener("error", onError);
+      video.removeEventListener("abort", onAbortEvent);
+      video.removeEventListener("stalled", onStalled);
+      signal?.removeEventListener("abort", onSignalAbort);
     };
-    target.addEventListener(event, onEvent, { once: true });
-    signal?.addEventListener("abort", onAbort, { once: true });
+    const onReady = () => { cleanup(); resolve(); };
+    const onError = () => { cleanup(); reject(new VideoEngineError("NOT_DECODABLE", "The browser could not decode this video with its native media engine.")); };
+    const onAbortEvent = () => { cleanup(); reject(new VideoEngineError("DECODING_FAILED", "The browser aborted video loading.")); };
+    const onStalled = () => { /* The timeout protects against a permanent stall. */ };
+    const onSignalAbort = () => { cleanup(); reject(new VideoEngineError("CANCELLED", "Video processing was cancelled.")); };
+    video.addEventListener("loadedmetadata", onReady, { once: true });
+    video.addEventListener("loadeddata", onReady, { once: true });
+    video.addEventListener("error", onError, { once: true });
+    video.addEventListener("abort", onAbortEvent, { once: true });
+    video.addEventListener("stalled", onStalled);
+    signal?.addEventListener("abort", onSignalAbort, { once: true });
   });
 }
 
@@ -96,15 +84,11 @@ async function loadVideo(file: File, signal?: AbortSignal): Promise<{ video: HTM
   const video = document.createElement("video");
   video.preload = "auto";
   video.playsInline = true;
-  video.muted = false;
   video.src = url;
-
   try {
-    if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
-      await waitForEvent(video, "loadedmetadata", signal);
-    }
-    if (!Number.isFinite(video.duration) || video.videoWidth <= 0 || video.videoHeight <= 0) {
-      throw new VideoEngineError("UNSUPPORTED_FORMAT", "This browser could not decode the selected video with its native media player.");
+    await waitForMediaReady(video, signal);
+    if (!Number.isFinite(video.duration) || video.duration <= 0 || video.videoWidth < 2 || video.videoHeight < 2) {
+      throw new VideoEngineError("NOT_DECODABLE", "The browser could not read valid video metadata.");
     }
     return { video, url };
   } catch (error) {
@@ -113,29 +97,100 @@ async function loadVideo(file: File, signal?: AbortSignal): Promise<{ video: HTM
   }
 }
 
-function waitForRecorderStop(recorder: MediaRecorder, chunks: Blob[], signal?: AbortSignal): Promise<Blob> {
+function drawFrame(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  canvasWidth: number,
+  canvasHeight: number,
+  plan: ReturnType<typeof resolveVideoTransformPlan>,
+): void {
+  ctx.save();
+  ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+  ctx.translate(canvasWidth / 2, canvasHeight / 2);
+  ctx.rotate((plan.rotation * Math.PI) / 180);
+  ctx.scale(plan.flipX ? -1 : 1, plan.flipY ? -1 : 1);
+
+  const { left, top, width: sourceWidth, height: sourceHeight } = plan.sourceRect;
+  const rotatedWidth = plan.rotation === 90 || plan.rotation === 270 ? canvasHeight : canvasWidth;
+  const rotatedHeight = plan.rotation === 90 || plan.rotation === 270 ? canvasWidth : canvasHeight;
+  const sourceRatio = sourceWidth / sourceHeight;
+  const targetRatio = rotatedWidth / rotatedHeight;
+  let drawWidth = rotatedWidth;
+  let drawHeight = rotatedHeight;
+  if (plan.fit === "contain") {
+    if (sourceRatio > targetRatio) drawHeight = drawWidth / sourceRatio;
+    else drawWidth = drawHeight * sourceRatio;
+  } else if (plan.fit === "cover") {
+    if (sourceRatio > targetRatio) drawWidth = drawHeight * sourceRatio;
+    else drawHeight = drawWidth / sourceRatio;
+  }
+  ctx.drawImage(video, left, top, sourceWidth, sourceHeight, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+  ctx.restore();
+}
+
+async function createAudioTrack(video: HTMLVideoElement, volume: number, muted: boolean): Promise<{ stream: MediaStream; cleanup: () => void }> {
+  if (muted) return { stream: new MediaStream(), cleanup: () => undefined };
+  const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) return { stream: new MediaStream(), cleanup: () => undefined };
+
+  const audioContext = new AudioContextCtor();
+  const source = audioContext.createMediaElementSource(video);
+  const gain = audioContext.createGain();
+  gain.gain.value = volume;
+  source.connect(gain);
+
+  // For boosts, a dynamics compressor is used after gain so values are not
+  // simply hard-clipped at [-1, 1]. It is intentionally deterministic rather
+  // than pretending to be a transparent mastering limiter.
+  let compressor: DynamicsCompressorNode | null = null;
+  if (volume > 1) {
+    compressor = audioContext.createDynamicsCompressor();
+    compressor.threshold.value = -6;
+    compressor.knee.value = 20;
+    compressor.ratio.value = 4;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.25;
+    gain.connect(compressor);
+  }
+  const destination = audioContext.createMediaStreamDestination();
+  (compressor ?? gain).connect(destination);
+  await audioContext.resume().catch(() => undefined);
+
+  return {
+    stream: destination.stream,
+    cleanup: () => {
+      try { source.disconnect(); } catch { /* best effort */ }
+      try { gain.disconnect(); } catch { /* best effort */ }
+      try { compressor?.disconnect(); } catch { /* best effort */ }
+      void audioContext.close().catch(() => undefined);
+    },
+  };
+}
+
+function waitForRecorderStop(
+  recorder: MediaRecorder,
+  chunks: Blob[],
+  signal: AbortSignal | undefined,
+  getFailure: () => VideoEngineError | null,
+): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    const onStop = () => {
-      cleanup();
-      if (!chunks.length) {
-        reject(new VideoEngineError("OUTPUT_FAILED", "The mobile browser produced an empty video."));
-        return;
-      }
-      resolve(new Blob(chunks, { type: recorder.mimeType || "video/webm" }));
-    };
-    const onError = () => {
-      cleanup();
-      reject(new VideoEngineError("PROCESSING_FAILED", "The mobile browser stopped video recording unexpectedly."));
-    };
-    const onAbort = () => {
-      cleanup();
-      try { recorder.stop(); } catch { /* best effort */ }
-      reject(new VideoEngineError("CANCELLED", "Video processing was cancelled."));
-    };
     const cleanup = () => {
       recorder.removeEventListener("stop", onStop);
       recorder.removeEventListener("error", onError);
       signal?.removeEventListener("abort", onAbort);
+    };
+    const onStop = () => {
+      cleanup();
+      const failure = getFailure();
+      if (failure) { reject(failure); return; }
+      if (!chunks.length) { reject(new VideoEngineError("OUTPUT_FAILED", "The native browser recorder produced an empty video.")); return; }
+      resolve(new Blob(chunks, { type: recorder.mimeType || "video/webm" }));
+    };
+    const onError = () => { cleanup(); reject(new VideoEngineError("ENCODING_FAILED", "The native browser recorder failed.")); };
+    const onAbort = () => {
+      cleanup();
+      try { if (recorder.state !== "inactive") recorder.stop(); } catch { /* best effort */ }
+      reject(new VideoEngineError("CANCELLED", "Video processing was cancelled."));
     };
     recorder.addEventListener("stop", onStop, { once: true });
     recorder.addEventListener("error", onError, { once: true });
@@ -143,368 +198,157 @@ function waitForRecorderStop(recorder: MediaRecorder, chunks: Blob[], signal?: A
   });
 }
 
-function calculateCanvasSize(video: HTMLVideoElement, options: VideoProcessOptions, toolId: VideoToolId): { width: number; height: number } {
-  let sourceWidth = video.videoWidth;
-  let sourceHeight = video.videoHeight;
-
-  if (options.crop && toolId === "video-cropper") {
-    sourceWidth = Math.min(sourceWidth, Math.max(2, options.crop.width));
-    sourceHeight = Math.min(sourceHeight, Math.max(2, options.crop.height));
-  }
-
-  let width = options.width && options.width > 0 ? Math.round(options.width) : sourceWidth;
-  let height = options.height && options.height > 0 ? Math.round(options.height) : sourceHeight;
-
-  if (toolId === "video-compressor" && options.quality === "low") {
-    const maxDimension = 1280;
-    const scale = Math.min(1, maxDimension / Math.max(width, height));
-    width = Math.round(width * scale);
-    height = Math.round(height * scale);
-  }
-
-  if (options.rotation === 90 || options.rotation === 270) {
-    [width, height] = [height, width];
-  }
-
-  width = Math.max(2, Math.min(3840, width));
-  height = Math.max(2, Math.min(3840, height));
-
-  // Encoders are generally happier with even dimensions.
-  width -= width % 2;
-  height -= height % 2;
-
-  return { width: Math.max(2, width), height: Math.max(2, height) };
-}
-
-function drawFrame(
-  ctx: CanvasRenderingContext2D,
-  video: HTMLVideoElement,
-  canvasWidth: number,
-  canvasHeight: number,
-  options: VideoProcessOptions,
-  toolId: VideoToolId,
-): void {
-  ctx.save();
-  ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-
-  const rotation = options.rotation ?? 0;
-  const flipX = toolId === "video-flipper" && options.flip === "horizontal" ? -1 : 1;
-  const flipY = toolId === "video-flipper" && options.flip === "vertical" ? -1 : 1;
-
-  ctx.translate(canvasWidth / 2, canvasHeight / 2);
-  ctx.rotate((rotation * Math.PI) / 180);
-  ctx.scale(flipX, flipY);
-
-  const drawWidth = rotation === 90 || rotation === 270 ? canvasHeight : canvasWidth;
-  const drawHeight = rotation === 90 || rotation === 270 ? canvasWidth : canvasHeight;
-
-  let sx = 0;
-  let sy = 0;
-  let sw = video.videoWidth;
-  let sh = video.videoHeight;
-
-  if (options.crop && toolId === "video-cropper") {
-    sx = Math.max(0, Math.min(video.videoWidth - 2, options.crop.left));
-    sy = Math.max(0, Math.min(video.videoHeight - 2, options.crop.top));
-    sw = Math.max(2, Math.min(video.videoWidth - sx, options.crop.width));
-    sh = Math.max(2, Math.min(video.videoHeight - sy, options.crop.height));
-  }
-
-  const sourceRatio = sw / sh;
-  const targetRatio = drawWidth / drawHeight;
-  let dw = drawWidth;
-  let dh = drawHeight;
-
-  const fit = options.fit ?? "contain";
-  if (fit === "contain") {
-    if (sourceRatio > targetRatio) dh = dw / sourceRatio;
-    else dw = dh * sourceRatio;
-  } else if (fit === "cover") {
-    if (sourceRatio > targetRatio) dw = dh * sourceRatio;
-    else dh = dw / sourceRatio;
-  }
-
-  ctx.drawImage(video, sx, sy, sw, sh, -dw / 2, -dh / 2, dw, dh);
-  ctx.restore();
-}
-
-async function createAudioTrack(
-  video: HTMLVideoElement,
-  volume: number,
-  muted: boolean,
-): Promise<{ stream: MediaStream; cleanup: () => void }> {
-  const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextCtor || muted) {
-    return { stream: new MediaStream(), cleanup: () => undefined };
-  }
-
-  const audioContext = new AudioContextCtor();
-  await audioContext.resume().catch(() => undefined);
-  const source = audioContext.createMediaElementSource(video);
-  const gain = audioContext.createGain();
-  gain.gain.value = Math.max(0, Math.min(4, volume));
-  const destination = audioContext.createMediaStreamDestination();
-  source.connect(gain);
-  gain.connect(destination);
-
-  return {
-    stream: destination.stream,
-    cleanup: () => {
-      try { source.disconnect(); } catch { /* best effort */ }
-      try { gain.disconnect(); } catch { /* best effort */ }
-      void audioContext.close().catch(() => undefined);
-    },
-  };
-}
-
-export function canUseVideoNativeFallback(): boolean {
-  return supportsFallback();
-}
+export function canUseVideoNativeFallback(): boolean { return supportsFallback(); }
 
 export async function processVideoWithNativeFallback(
   file: File,
   toolId: VideoToolId,
   options: VideoProcessOptions = {},
 ): Promise<FallbackResult> {
-  if (!supportsFallback()) {
-    throw new VideoEngineError("BROWSER_UNSUPPORTED", "This browser does not provide a compatible mobile video processing path.");
+  if (!supportsFallback()) throw new VideoEngineError("BROWSER_UNSUPPORTED", "This browser does not provide the native video fallback.");
+  if (["video-merger", "extract-audio-from-video", "video-to-gif", "gif-to-video"].includes(toolId)) {
+    throw new VideoEngineError("BROWSER_UNSUPPORTED", "The native fallback does not support this operation without changing its semantics.");
   }
 
-  if (toolId === "video-merger" || toolId === "extract-audio-from-video" || toolId === "video-to-gif" || toolId === "gif-to-video") {
-    throw new VideoEngineError("BROWSER_UNSUPPORTED", "This operation needs a media codec that is unavailable in this browser.");
-  }
+  const { video, url } = await loadVideo(file, options.signal);
+  let audioCleanup: () => void = () => undefined;
+  let recorder: MediaRecorder | null = null;
+  let raf = 0;
+  try {
+    checkAbort(options.signal);
+    const duration = video.duration;
+    if (duration > MAX_FALLBACK_DURATION_SECONDS) {
+      throw new VideoEngineError("MEMORY_LIMIT", "The native browser fallback is limited to shorter videos to avoid unbounded MediaRecorder memory usage.");
+    }
 
-  checkAbort(options.signal);
-  emit(options, { stage: "reading", progress: 0.02, message: "Opening video with the mobile browser media engine..." });
-
-const { video, url } = await loadVideo(file, options.signal);
-
-let audioCleanup: () => void = () => {};
-let recorder: MediaRecorder | null = null;
-
-try {
-  checkAbort(options.signal);
-
-  const duration = Number.isFinite(video.duration)
-    ? video.duration
-    : 0;
-
-  /*
-   * Start time
-   *
-   * Never allow start to be:
-   * - negative
-   * - greater than the video duration
-   */
-  const start = Math.max(
-    0,
-    Math.min(
+    const metadata = {
+      mimeType: video.currentSrc ? "video/*" : "video/*",
+      format: "native",
       duration,
-      options.start ?? 0
-    )
-  );
-
-  /*
-   * End time
-   *
-   * We intentionally use ?? instead of mixing ?? with ||.
-   *
-   * If options.end is provided, use it.
-   * Otherwise process until the end of the video.
-   */
-  const requestedEnd = options.end ?? duration;
-
-  const end = Math.max(
-    start + 0.001,
-    Math.min(
-      duration,
-      requestedEnd
-    )
-  );
-
-  /*
-   * Playback speed
-   *
-   * Keep the browser-native fallback within
-   * a safe range.
-   */
-  const speed = Math.max(
-    0.25,
-    Math.min(
-      4,
-      options.speed ?? 1
-    )
-  );
-
-  /*
-   * Audio volume
-   *
-   * 0   = muted
-   * 1   = original volume
-   * >1  = boosted volume
-   */
-  const volume = Math.max(
-    0,
-    Math.min(
-      4,
-      options.volume ?? 1
-    )
-  );
-
-  /*
-   * Calculate the final canvas dimensions.
-   *
-   * This handles:
-   * - resize
-   * - crop
-   * - rotation
-   * - normal video processing
-   */
-  const { width, height } = calculateCanvasSize(
-    video,
-    options,
-    toolId
-  );
+      width: video.videoWidth,
+      height: video.videoHeight,
+      rotation: 0,
+      videoCodec: null,
+      audioCodec: null,
+      frameRate: 30,
+      hasAudio: true,
+      fileSize: file.size,
+    };
+    const plan = resolveVideoTransformPlan(metadata, options, toolId);
+    const { width, height } = { width: plan.outputWidth, height: plan.outputHeight };
 
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext("2d", { alpha: false });
-    if (!ctx) throw new VideoEngineError("BROWSER_UNSUPPORTED", "Canvas video processing is unavailable on this device.");
+    if (!ctx) throw new VideoEngineError("BROWSER_UNSUPPORTED", "Canvas processing is unavailable on this browser.");
 
-    const fps = Math.max(15, Math.min(30, options.fps && options.fps > 0 ? options.fps : 30));
-    const canvasStream = canvas.captureStream(fps);
-    const audio = await createAudioTrack(
-      video,
-      toolId === "video-volume-booster" ? volume : 1,
-      toolId === "mute-video",
-    );
+    const fps = options.fps ?? 30;
+    const canvasStream = canvas.captureStream(Math.max(15, Math.min(30, fps)));
+    const audio = await createAudioTrack(video, toolId === "video-volume-booster" ? (options.volume ?? 1) : 1, toolId === "mute-video");
     audioCleanup = audio.cleanup;
-
     for (const track of audio.stream.getAudioTracks()) canvasStream.addTrack(track);
 
     const recorderInfo = chooseRecorderMime(options.outputFormat);
-    const pixels = width * height;
-    const videoBitsPerSecond = qualityBitrate(options.quality, pixels);
-    const audioBitsPerSecond = toolId === "mute-video" ? undefined : 128_000;
-
+    const recorderBits = qualityBitrate(options.quality, width * height);
     recorder = new MediaRecorder(canvasStream, {
       mimeType: recorderInfo.mimeType,
-      videoBitsPerSecond,
-      ...(audioBitsPerSecond ? { audioBitsPerSecond } : {}),
+      videoBitsPerSecond: recorderBits,
+      audioBitsPerSecond: toolId === "mute-video" ? undefined : 128_000,
     });
 
     const chunks: Blob[] = [];
+    let recordedBytes = 0;
+    let recordingFailure: VideoEngineError | null = null;
     recorder.addEventListener("dataavailable", (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
+      if (event.data.size <= 0 || recordingFailure) return;
+      recordedBytes += event.data.size;
+      if (recordedBytes > MAX_FALLBACK_OUTPUT_BYTES) {
+        recordingFailure = new VideoEngineError("MEMORY_LIMIT", "The native fallback output exceeded the safe in-memory limit.");
+        try { if (recorder?.state !== "inactive") recorder?.stop(); } catch { /* best effort */ }
+        return;
+      }
+      chunks.push(event.data);
     });
 
-    const stopped = waitForRecorderStop(recorder, chunks, options.signal);
+    const start = options.start ?? 0;
+    const end = options.end ?? duration;
 
     if (Math.abs(video.currentTime - start) > 0.01) {
       await new Promise<void>((resolve, reject) => {
-        const onSeeked = () => {
-          cleanup();
-          resolve();
-        };
-        const onAbort = () => {
-          cleanup();
-          reject(new VideoEngineError("CANCELLED", "Video processing was cancelled."));
-        };
-        const cleanup = () => {
-          video.removeEventListener("seeked", onSeeked);
-          options.signal?.removeEventListener("abort", onAbort);
-        };
+        let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => { cleanup(); reject(new VideoEngineError("TIMEOUT", "The browser video seek stalled.")); }, MEDIA_EVENT_TIMEOUT_MS);
+        const cleanup = () => { if (timer) clearTimeout(timer); timer = null; video.removeEventListener("seeked", onSeeked); video.removeEventListener("error", onError); options.signal?.removeEventListener("abort", onAbort); };
+        const onSeeked = () => { cleanup(); resolve(); };
+        const onError = () => { cleanup(); reject(new VideoEngineError("DECODING_FAILED", "The browser failed while seeking the video.")); };
+        const onAbort = () => { cleanup(); reject(new VideoEngineError("CANCELLED", "Video processing was cancelled.")); };
         video.addEventListener("seeked", onSeeked, { once: true });
+        video.addEventListener("error", onError, { once: true });
         options.signal?.addEventListener("abort", onAbort, { once: true });
         video.currentTime = start;
       });
     }
-    video.playbackRate = speed;
 
-    let raf = 0;
-    let ended = false;
+    video.playbackRate = options.speed ?? 1;
+    try {
+      recorder.start(1000);
+    } catch (error) {
+      throw new VideoEngineError("ENCODING_FAILED", "The browser could not start its native recorder.", error);
+    }
+    const stopped = waitForRecorderStop(recorder, chunks, options.signal, () => recordingFailure);
+    try {
+      video.muted = true;
+      await video.play();
+    } catch (error) {
+      throw new VideoEngineError("BROWSER_UNSUPPORTED", "The browser did not allow local video playback for the fallback engine.", error);
+    }
 
+    let lastMediaTime = video.currentTime;
+    let lastMediaAdvanceAt = performance.now();
     const render = () => {
-      if (ended) return;
+      if (recordingFailure || options.signal?.aborted) return;
       try {
         checkAbort(options.signal);
-        drawFrame(ctx, video, width, height, options, toolId);
+        drawFrame(ctx, video, width, height, plan);
         const current = video.currentTime;
-        const effectiveProgress = duration > 0 ? Math.max(0, Math.min(1, (current - start) / Math.max(0.001, end - start))) : 0;
-        emit(options, {
-          stage: "encoding",
-          progress: 0.05 + effectiveProgress * 0.88,
-          processedSeconds: current,
-          duration,
-          message: "Processing video on the mobile browser engine...",
-        });
+        if (current > lastMediaTime + 0.001) {
+          lastMediaTime = current;
+          lastMediaAdvanceAt = performance.now();
+        } else if (performance.now() - lastMediaAdvanceAt > 30_000) {
+          throw new VideoEngineError("TIMEOUT", "The native video renderer stalled.");
+        }
+        const p = Math.max(0, Math.min(1, (current - start) / Math.max(0.001, end - start)));
+        emit(options, { stage: "encoding", progress: 0.05 + p * 0.88, processedSeconds: current, duration, outputBytes: recordedBytes || undefined, message: "Processing locally with the browser fallback..." });
         if (current >= end || video.ended) {
-          ended = true;
           try { video.pause(); } catch { /* best effort */ }
-          try { recorder?.stop(); } catch { /* best effort */ }
+          try { if (recorder?.state !== "inactive") recorder?.stop(); } catch { /* best effort */ }
           return;
         }
         raf = requestAnimationFrame(render);
-      } catch {
-        ended = true;
-        try { recorder?.stop(); } catch { /* best effort */ }
+      } catch (error) {
+        recordingFailure = error instanceof VideoEngineError ? error : new VideoEngineError("PROCESSING_FAILED", "The native fallback failed while rendering the video.", error);
+        try { if (recorder?.state !== "inactive") recorder?.stop(); } catch { /* best effort */ }
       }
     };
 
-    recorder.start(1000);
-    try {
-      await video.play();
-    } catch (playError) {
-      // Some mobile browsers reject unmuted programmatic playback after an async operation.
-      // Retry muted so the video pipeline can still run; the audio track, when available,
-      // is supplied independently through Web Audio.
-      video.muted = true;
-      try {
-        await video.play();
-      } catch {
-        throw new VideoEngineError("BROWSER_UNSUPPORTED", "The mobile browser did not allow local video playback for processing.", playError);
-      }
-    }
+    emit(options, { stage: "reading", progress: 0.02, message: "Opening video with the browser fallback..." });
     render();
-
     const blob = await stopped;
     if (raf) cancelAnimationFrame(raf);
+    if (blob.size <= 0) throw new VideoEngineError("OUTPUT_FAILED", "The browser fallback produced an empty output.");
 
-    emit(options, {
-      stage: "complete",
-      progress: 1,
-      duration,
-      processedSeconds: duration,
-      outputBytes: blob.size,
-      message: `Processed locally using the mobile-compatible ${recorderInfo.extension.toUpperCase()} engine.`,
-    });
-
-    const filename = `${baseName(file.name)}-workabhi.${recorderInfo.extension}`;
-    return {
-      blob,
-      filename,
-      mimeType: blob.type || `video/${recorderInfo.extension}`,
-      size: blob.size,
-      directToDisk: false,
-      fallback: true,
-    };
+    emit(options, { stage: "complete", progress: 1, duration, processedSeconds: end, outputBytes: blob.size, message: `Processed locally using the ${recorderInfo.extension.toUpperCase()} browser fallback.` });
+    return { blob, filename: `${baseName(file.name)}-workabhi.${recorderInfo.extension}`, mimeType: blob.type || `video/${recorderInfo.extension}`, size: blob.size, streamedDownload: false, fallback: true };
   } catch (error) {
     if (error instanceof VideoEngineError) throw error;
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new VideoEngineError("CANCELLED", "Video processing was cancelled.", error);
-    }
-    throw new VideoEngineError(
-      "PROCESSING_FAILED",
-      "The mobile browser could not process this video. Try a shorter video or a lower resolution.",
-      error,
-    );
+    if (error instanceof DOMException && error.name === "AbortError") throw new VideoEngineError("CANCELLED", "Video processing was cancelled.", error);
+    throw new VideoEngineError("PROCESSING_FAILED", "The browser fallback could not process this video.", error);
   } finally {
+    if (raf) cancelAnimationFrame(raf);
     try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch { /* best effort */ }
     audioCleanup();
-    video.pause();
+    try { video.pause(); } catch { /* best effort */ }
     video.removeAttribute("src");
-    video.load();
+    try { video.load(); } catch { /* best effort */ }
     URL.revokeObjectURL(url);
   }
 }

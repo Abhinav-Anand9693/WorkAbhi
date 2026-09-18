@@ -1,8 +1,15 @@
-import { GIFEncoder, applyPalette, quantize } from "gifenc";
-import { decompressFrames, parseGIF } from "gifuct-js";
 import {
-  AudioSample,
-  AudioSampleSource,
+  GIFEncoder,
+  applyPalette,
+  quantize,
+} from "gifenc";
+
+import {
+  decompressFrames,
+  parseGIF,
+} from "gifuct-js";
+
+import {
   Mp4OutputFormat,
   Output,
   Quality,
@@ -14,152 +21,804 @@ import {
   BlobSource,
   BufferTarget,
 } from "mediabunny";
-import type { VideoProcessOptions } from "../videoTypes";
-import { VideoEngineError } from "../videoTypes";
+
+import type {
+  VideoProcessOptions,
+} from "../videoTypes";
+
+import {
+  VideoEngineError,
+  DEFAULT_VIDEO_LIMITS,
+} from "../videoTypes";
+
+
+/* ========================================================================= */
+/* TYPES                                                                     */
+/* ========================================================================= */
 
 interface GifFrame {
   patch: Uint8ClampedArray;
-  dims: { top: number; left: number; width: number; height: number };
+
+  dims: {
+    top: number;
+    left: number;
+    width: number;
+    height: number;
+  };
+
   delay: number;
+
   disposalType: number;
 }
 
-function checkAbort(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new VideoEngineError("CANCELLED", "Video processing was cancelled.");
+
+/* ========================================================================= */
+/* CANVAS TYPES                                                              */
+/* ========================================================================= */
+
+type CanvasLike =
+  | HTMLCanvasElement
+  | OffscreenCanvas;
+
+type Canvas2DContext =
+  | CanvasRenderingContext2D
+  | OffscreenCanvasRenderingContext2D;
+
+
+/* ========================================================================= */
+/* ABORT                                                                     */
+/* ========================================================================= */
+
+function checkAbort(
+  signal?: AbortSignal,
+): void {
+  if (signal?.aborted) {
+    throw new VideoEngineError(
+      "CANCELLED",
+      "Video processing was cancelled.",
+    );
+  }
 }
 
-export async function videoToGif(file: File, options: VideoProcessOptions = {}): Promise<Blob> {
-  const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+
+/* ========================================================================= */
+/* ARRAY BUFFER HELPERS                                                      */
+/* ========================================================================= */
+
+/**
+ * Converts Uint8Array<ArrayBufferLike> into a real ArrayBuffer.
+ *
+ * This is important with newer TypeScript versions where
+ * Uint8Array<ArrayBufferLike> is not directly accepted by Blob.
+ */
+function uint8ArrayToArrayBuffer(
+  data: Uint8Array<ArrayBufferLike>,
+): ArrayBuffer {
+  const buffer =
+    new ArrayBuffer(
+      data.byteLength,
+    );
+
+  const output =
+    new Uint8Array(
+      buffer,
+    );
+
+  output.set(data);
+
+  return buffer;
+}
+
+
+/**
+ * Converts Uint8ClampedArray<ArrayBufferLike>
+ * into an ImageData-compatible Uint8ClampedArray.
+ */
+function toImageData(
+  data: Uint8ClampedArray<ArrayBufferLike>,
+  width: number,
+  height: number,
+): ImageData {
+  const buffer =
+    new ArrayBuffer(
+      data.byteLength,
+    );
+
+  const output =
+    new Uint8ClampedArray(
+      buffer,
+    );
+
+  output.set(data);
+
+  return new ImageData(
+    output,
+    width,
+    height,
+  );
+}
+
+
+/* ========================================================================= */
+/* CANVAS HELPERS                                                            */
+/* ========================================================================= */
+
+function createCanvas(
+  width: number,
+  height: number,
+): CanvasLike {
+  if (
+    typeof OffscreenCanvas !==
+    "undefined"
+  ) {
+    return new OffscreenCanvas(
+      width,
+      height,
+    );
+  }
+
+  const canvas =
+    document.createElement(
+      "canvas",
+    );
+
+  canvas.width =
+    width;
+
+  canvas.height =
+    height;
+
+  return canvas;
+}
+
+
+/**
+ * Explicitly narrow the canvas context.
+ *
+ * Without this helper TypeScript can infer:
+ *
+ * OffscreenCanvasRenderingContext2D |
+ * ImageBitmapRenderingContext |
+ * RenderingContext
+ *
+ * which causes clearRect/drawImage/getImageData/
+ * putImageData errors.
+ */
+function getCanvas2DContext(
+  canvas: CanvasLike,
+  settings?: CanvasRenderingContext2DSettings,
+): Canvas2DContext {
+  const context =
+    canvas.getContext(
+      "2d",
+      settings,
+    );
+
+  if (!context) {
+    throw new VideoEngineError(
+      "BROWSER_UNSUPPORTED",
+      "Canvas 2D processing is unavailable in this browser.",
+    );
+  }
+
+  return context as Canvas2DContext;
+}
+
+
+/* ========================================================================= */
+/* VIDEO → GIF                                                               */
+/* ========================================================================= */
+
+export async function videoToGif(
+  file: File,
+  options: VideoProcessOptions = {},
+): Promise<Blob> {
+  checkAbort(
+    options.signal,
+  );
+
+  const input =
+    new Input({
+      source:
+        new BlobSource(
+          file,
+          {
+            /*
+             * Keep the source cache small.
+             *
+             * The complete source video is NOT copied
+             * into memory.
+             */
+            maxCacheSize:
+              4 *
+              1024 *
+              1024,
+
+            useStreamReader:
+              true,
+          },
+        ),
+
+      formats:
+        ALL_FORMATS,
+    });
+
   try {
-    const track = await input.getPrimaryVideoTrack();
-    if (!track) throw new VideoEngineError("UNSUPPORTED_FORMAT", "No video track was found.");
+    checkAbort(
+      options.signal,
+    );
 
-    const duration = await input.getDurationFromMetadata() ?? 0;
-    const width = await track.getDisplayWidth();
-    const height = await track.getDisplayHeight();
-    const maxDimension = Math.max(width, height);
-    const targetDimension = Math.min(options.width ?? maxDimension, options.height ?? maxDimension, 720);
-    const scale = Math.min(1, targetDimension / maxDimension);
-    const outputWidth = Math.max(2, Math.round(width * scale) & ~1);
-    const outputHeight = Math.max(2, Math.round(height * scale) & ~1);
-    const fps = Math.min(15, Math.max(1, options.fps ?? 10));
-    const maxFrames = Math.min(180, Math.max(1, options.maxFrames ?? 120));
-    const start = Math.max(0, options.start ?? 0);
-    const end = Math.min(duration || Number.POSITIVE_INFINITY, (options.end ?? duration) || Number.POSITIVE_INFINITY);
-    const effectiveEnd = Math.max(start, end);
-    const requestedFrames = Math.ceil(Math.max(0.001, effectiveEnd - start) * fps);
-    const frameCount = Math.min(maxFrames, requestedFrames);
+    const track =
+      await input.getPrimaryVideoTrack();
 
-    if (outputWidth * outputHeight > 720 * 720) {
-      throw new VideoEngineError("MEMORY_LIMIT", "The GIF resolution is too high for stable browser processing.");
+    if (!track) {
+      throw new VideoEngineError(
+        "UNSUPPORTED_FORMAT",
+        "No video track was found in the selected video.",
+      );
     }
 
-    const sink = new VideoSampleSink(track);
-    const canvas = typeof OffscreenCanvas !== "undefined"
-      ? new OffscreenCanvas(outputWidth, outputHeight)
-      : document.createElement("canvas");
-    canvas.width = outputWidth;
-    canvas.height = outputHeight;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) throw new VideoEngineError("BROWSER_UNSUPPORTED", "Canvas processing is unavailable in this browser.");
+    const duration =
+      await input.getDurationFromMetadata() ??
+      0;
 
-    const gif = GIFEncoder();
-    for (let i = 0; i < frameCount; i += 1) {
-      checkAbort(options.signal);
-      const timestamp = Math.min(effectiveEnd, start + i / fps);
-      const sample = await sink.getSample(timestamp);
-      if (!sample) continue;
+    const sourceWidth =
+      await track.getDisplayWidth();
+
+    const sourceHeight =
+      await track.getDisplayHeight();
+
+    const rotation = ((await track.getRotation()) % 360 + 360) % 360;
+    if (!Number.isFinite(duration) || duration < 0 || duration > 24 * 60 * 60) {
+      throw new VideoEngineError("INVALID_FILE", "The video duration is invalid for GIF conversion.");
+    }
+
+    if (
+      sourceWidth <= 0 ||
+      sourceHeight <= 0 ||
+      sourceWidth * sourceHeight > DEFAULT_VIDEO_LIMITS.maxPixels
+    ) {
+      throw new VideoEngineError(
+        "UNSUPPORTED_FORMAT",
+        "The video dimensions could not be determined.",
+      );
+    }
+
+    const orientedWidth = rotation === 90 || rotation === 270 ? sourceHeight : sourceWidth;
+    const orientedHeight = rotation === 90 || rotation === 270 ? sourceWidth : sourceHeight;
+    const requestedWidth = options.width ?? Math.min(DEFAULT_VIDEO_LIMITS.maxGifDimension, orientedWidth);
+    const requestedHeight = options.height ?? Math.min(DEFAULT_VIDEO_LIMITS.maxGifDimension, orientedHeight);
+    if (!Number.isFinite(requestedWidth) || !Number.isFinite(requestedHeight) || requestedWidth <= 0 || requestedHeight <= 0) {
+      throw new VideoEngineError("INVALID_OPTIONS", "GIF dimensions must be positive numbers.");
+    }
+    const scale = Math.min(1, DEFAULT_VIDEO_LIMITS.maxGifDimension / orientedWidth, requestedWidth / orientedWidth, requestedHeight / orientedHeight);
+    const outputWidth = Math.max(2, Math.floor(orientedWidth * scale) & ~1);
+    const outputHeight = Math.max(2, Math.floor(orientedHeight * scale) & ~1);
+
+    /*
+     * GIF frame rate.
+     */
+    const fps = options.fps ?? 10;
+    if (!Number.isFinite(fps) || fps <= 0 || fps > 15) {
+      throw new VideoEngineError("INVALID_OPTIONS", "GIF FPS must be between 0 and 15.");
+    }
+
+    /*
+     * Maximum GIF frame count.
+     */
+    const maxFrames = options.maxFrames ?? 120;
+    if (!Number.isFinite(maxFrames) || !Number.isInteger(maxFrames) || maxFrames < 1 || maxFrames > DEFAULT_VIDEO_LIMITS.maxGifFrames) {
+      throw new VideoEngineError("INVALID_OPTIONS", `GIF frame count must be an integer from 1 to ${DEFAULT_VIDEO_LIMITS.maxGifFrames}.`);
+    }
+
+    const start = options.start ?? 0;
+    const requestedEnd = options.end ?? duration;
+    if (!Number.isFinite(start) || start < 0 || start >= duration) {
+      throw new VideoEngineError("INVALID_OPTIONS", "GIF start time must be within the video duration.");
+    }
+    if (!Number.isFinite(requestedEnd) || requestedEnd <= start || requestedEnd > duration) {
+      throw new VideoEngineError("INVALID_OPTIONS", "GIF end time must be after start and within the video duration.");
+    }
+    const effectiveEnd = requestedEnd;
+
+    const requestedFrames =
+      Math.ceil(
+        Math.max(
+          0.001,
+          effectiveEnd -
+            start,
+        ) *
+          fps,
+      );
+
+    const frameCount =
+      Math.min(
+        maxFrames,
+        requestedFrames,
+      );
+
+    const estimatedRgbaBytes = outputWidth * outputHeight * 4 * frameCount;
+    if (estimatedRgbaBytes > 256 * 1024 * 1024) {
+      throw new VideoEngineError("MEMORY_LIMIT", "The GIF frame set would require too much browser memory.");
+    }
+
+    if (
+      outputWidth *
+        outputHeight >
+      DEFAULT_VIDEO_LIMITS.maxGifDimension *
+        DEFAULT_VIDEO_LIMITS.maxGifDimension
+    ) {
+      throw new VideoEngineError(
+        "MEMORY_LIMIT",
+        "The GIF resolution is too high for stable browser processing.",
+      );
+    }
+
+    if (
+      frameCount <= 0
+    ) {
+      throw new VideoEngineError(
+        "INVALID_OPTIONS",
+        "No frames are available in the selected time range.",
+      );
+    }
+
+    const sink =
+      new VideoSampleSink(
+        track,
+      );
+
+    const canvas =
+      createCanvas(
+        outputWidth,
+        outputHeight,
+      );
+
+    const ctx =
+      getCanvas2DContext(
+        canvas,
+        {
+          willReadFrequently:
+            true,
+        },
+      );
+
+    const gif =
+      GIFEncoder();
+
+    for (
+      let i = 0;
+      i < frameCount;
+      i += 1
+    ) {
+      checkAbort(
+        options.signal,
+      );
+
+      const timestamp =
+        Math.min(
+          effectiveEnd,
+          start +
+            i / fps,
+        );
+
+      const sample =
+        await sink.getSample(
+          timestamp,
+        );
+
+      if (!sample) {
+        continue;
+      }
+
       try {
-        const source = sample.toCanvasImageSource();
-        ctx.clearRect(0, 0, outputWidth, outputHeight);
-        ctx.drawImage(source, 0, 0, outputWidth, outputHeight);
-        const rgba = ctx.getImageData(0, 0, outputWidth, outputHeight).data;
-        const palette = quantize(rgba, 256);
-        const index = applyPalette(rgba, palette);
-        gif.writeFrame(index, outputWidth, outputHeight, {
-          palette,
-          delay: Math.max(20, Math.round(1000 / fps)),
-          repeat: 0,
-        });
+        const source =
+          sample.toCanvasImageSource();
+
+        ctx.clearRect(
+          0,
+          0,
+          outputWidth,
+          outputHeight,
+        );
+
+        ctx.save();
+        ctx.translate(outputWidth / 2, outputHeight / 2);
+        ctx.rotate((rotation * Math.PI) / 180);
+        const drawWidth = rotation === 90 || rotation === 270 ? outputHeight : outputWidth;
+        const drawHeight = rotation === 90 || rotation === 270 ? outputWidth : outputHeight;
+        ctx.drawImage(source, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
+        ctx.restore();
+
+        const imageData =
+          ctx.getImageData(
+            0,
+            0,
+            outputWidth,
+            outputHeight,
+          );
+
+        const rgba =
+          imageData.data;
+
+        const palette =
+          quantize(
+            rgba,
+            256,
+          );
+
+        const index =
+          applyPalette(
+            rgba,
+            palette,
+          );
+
+        gif.writeFrame(
+          index,
+          outputWidth,
+          outputHeight,
+          {
+            palette,
+
+            delay:
+              Math.max(
+                20,
+                Math.round(
+                  1000 /
+                    fps,
+                ),
+              ),
+
+            repeat:
+              0,
+          },
+        );
       } finally {
+        /*
+         * Release the decoded video sample
+         * immediately.
+         */
         sample.close();
       }
+
       options.onProgress?.({
-        stage: "encoding",
-        progress: (i + 1) / frameCount,
-        processedSeconds: timestamp,
-        duration: effectiveEnd,
-        message: "Encoding GIF frames...",
+        stage:
+          "encoding",
+
+        progress:
+          (i + 1) /
+          frameCount,
+
+        processedSeconds:
+          timestamp,
+
+        duration:
+          effectiveEnd,
+
+        message:
+          "Encoding GIF frames...",
       });
     }
 
-  gif.finish();
+    checkAbort(
+      options.signal,
+    );
 
-const encodedBytes = gif.bytes();
+    gif.finish();
 
-const blobBytes = new Uint8Array(encodedBytes.byteLength);
-blobBytes.set(encodedBytes);
+    /*
+     * gif.bytes() returns Uint8Array.
+     *
+     * Convert it to a concrete ArrayBuffer
+     * before creating the Blob.
+     */
+    const gifBytes =
+      gif.bytes();
 
-return new Blob([blobBytes.buffer], {
-  type: "image/gif",
-});
+    const gifBuffer =
+      uint8ArrayToArrayBuffer(
+        gifBytes,
+      );
+    if (gifBuffer.byteLength > 128 * 1024 * 1024) {
+      throw new VideoEngineError("MEMORY_LIMIT", "The generated GIF is too large to keep safely in browser memory.");
+    }
+
+    return new Blob(
+      [gifBuffer],
+      {
+        type:
+          "image/gif",
+      },
+    );
+  } catch (error) {
+    if (
+      error instanceof
+      VideoEngineError
+    ) {
+      throw error;
+    }
+
+    throw new VideoEngineError(
+      "PROCESSING_FAILED",
+      "The video could not be converted to GIF.",
+      error,
+    );
   } finally {
     input.dispose();
   }
 }
 
-export async function gifToVideo(file: File, options: VideoProcessOptions = {}): Promise<Blob> {
-  if (file.size > 50 * 1024 * 1024) {
-    throw new VideoEngineError("MEMORY_LIMIT", "This GIF is too large for reliable browser decoding. Try a smaller GIF.");
-  }
 
-  const buffer = await file.arrayBuffer();
-  checkAbort(options.signal);
-  const parsed = parseGIF(buffer);
-  const frames = decompressFrames(parsed, true) as GifFrame[];
-  if (!frames.length) throw new VideoEngineError("INVALID_FILE", "No animation frames were found in the GIF.");
-  if (frames.length > 180) throw new VideoEngineError("MEMORY_LIMIT", "This GIF contains too many frames for stable browser conversion.");
+/* ========================================================================= */
+/* GIF → VIDEO                                                               */
+/* ========================================================================= */
+
+export async function gifToVideo(
+  file: File,
+  options: VideoProcessOptions = {},
+): Promise<Blob> {
+  checkAbort(
+    options.signal,
+  );
+
+  /*
+   * IMPORTANT:
+   *
+   * There is intentionally NO arbitrary 50 MB,
+   * 100 MB, 250 MB, etc. GIF file-size restriction.
+   *
+   * GIF processing is controlled through frame count
+   * and output dimensions instead.
+   */
+
+  const arrayBuffer =
+    await file.arrayBuffer();
+
+  checkAbort(
+    options.signal,
+  );
+
+  /*
+   * gifuct-js accepts the ArrayBuffer.
+   *
+   * IMPORTANT:
+   *
+   * Do NOT create another variable called
+   * "arrayBuffer".
+   *
+   * Do NOT pass Uint8Array here.
+   */
+  const parsed =
+    parseGIF(
+      arrayBuffer,
+    );
 
   const sourceWidth = parsed.lsd.width;
   const sourceHeight = parsed.lsd.height;
-  const scale = Math.min(1, 720 / Math.max(sourceWidth, sourceHeight));
-  const width = Math.max(2, Math.floor(sourceWidth * scale) & ~1);
-  const height = Math.max(2, Math.floor(sourceHeight * scale) & ~1);
+  if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth < 2 || sourceHeight < 2) {
+    throw new VideoEngineError("INVALID_FILE", "The GIF has invalid dimensions.");
+  }
+  if (sourceWidth * sourceHeight > DEFAULT_VIDEO_LIMITS.maxGifDimension * DEFAULT_VIDEO_LIMITS.maxGifDimension) {
+    throw new VideoEngineError("MEMORY_LIMIT", "The GIF dimensions are too large for stable browser processing.");
+  }
 
-  const canvas = typeof OffscreenCanvas !== "undefined"
-    ? new OffscreenCanvas(width, height)
-    : document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new VideoEngineError("BROWSER_UNSUPPORTED", "Canvas processing is unavailable in this browser.");
+  // parseGIF exposes frame descriptors before pixel patches are decompressed.
+  // Estimate worst-case RGBA memory before calling decompressFrames().
+  const rawFrameCount = Array.isArray((parsed as { frames?: unknown[] }).frames)
+    ? ((parsed as { frames: unknown[] }).frames.length)
+    : DEFAULT_VIDEO_LIMITS.maxGifFrames + 1;
+  if (rawFrameCount > DEFAULT_VIDEO_LIMITS.maxGifFrames) {
+    throw new VideoEngineError("MEMORY_LIMIT", `This GIF contains more than ${DEFAULT_VIDEO_LIMITS.maxGifFrames} frames.`);
+  }
+  const estimatedGifMemory = sourceWidth * sourceHeight * 4 * rawFrameCount;
+  if (estimatedGifMemory > 256 * 1024 * 1024) {
+    throw new VideoEngineError("MEMORY_LIMIT", "The GIF would expand beyond the safe browser memory budget.");
+  }
 
-  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() });
-  const videoSource = new VideoSampleSource({ codec: "avc", quality: new Quality("medium") });
-  output.addVideoTrack(videoSource);
+  const frames =
+    decompressFrames(
+      parsed,
+      true,
+    ) as GifFrame[];
+
+  if (
+    frames.length === 0
+  ) {
+    throw new VideoEngineError(
+      "INVALID_FILE",
+      "No animation frames were found in the GIF.",
+    );
+  }
+
+  /*
+   * This protects browser memory from extremely
+   * complex GIF animations.
+   *
+   * It is NOT an input file-size limit.
+   */
+  if (
+    frames.length >
+    180
+  ) {
+    throw new VideoEngineError(
+      "MEMORY_LIMIT",
+      "This GIF contains too many frames for stable browser conversion.",
+    );
+  }
+
+  /*
+   * Maximum GIF conversion dimension.
+   */
+  const scale =
+    Math.min(
+      1,
+      720 /
+        Math.max(
+          sourceWidth,
+          sourceHeight,
+        ),
+    );
+
+  const width =
+    Math.max(
+      2,
+      Math.floor(
+        sourceWidth *
+          scale,
+      ) & ~1,
+    );
+
+  const height =
+    Math.max(
+      2,
+      Math.floor(
+        sourceHeight *
+          scale,
+      ) & ~1,
+    );
+
+  if (
+    width *
+      height >
+    720 *
+      720
+  ) {
+    throw new VideoEngineError(
+      "MEMORY_LIMIT",
+      "The GIF resolution is too high for stable browser processing.",
+    );
+  }
+
+  const canvas =
+    createCanvas(
+      width,
+      height,
+    );
+
+  const ctx =
+    getCanvas2DContext(
+      canvas,
+      {
+        willReadFrequently:
+          true,
+      },
+    );
+
+  ctx.clearRect(
+    0,
+    0,
+    width,
+    height,
+  );
+
+  /*
+   * GIF → MP4 currently uses BufferTarget.
+   *
+   * This adapter remains isolated from the main
+   * large-video processing pipeline.
+   */
+  const output =
+    new Output({
+      format:
+        new Mp4OutputFormat(),
+
+      target:
+        new BufferTarget(),
+    });
+
+  const videoSource =
+    new VideoSampleSource({
+      codec:
+        "avc",
+
+      quality:
+        new Quality(
+          "medium",
+        ),
+    });
+
+  output.addVideoTrack(
+    videoSource,
+  );
+
   await output.start();
 
-  let timestamp = 0;
-  let previousSnapshot: ImageData | null = null;
+  let timestamp =
+    0;
+
+  let previousSnapshot:
+    | ImageData
+    | null =
+    null;
 
   try {
-    for (let i = 0; i < frames.length; i += 1) {
-      checkAbort(options.signal);
-      const frame = frames[i];
-      if (frame.disposalType === 3) {
-        previousSnapshot = ctx.getImageData(0, 0, width, height);
+    for (
+      let i = 0;
+      i < frames.length;
+      i += 1
+    ) {
+      checkAbort(
+        options.signal,
+      );
+
+      const frame =
+        frames[i];
+
+      /*
+       * GIF disposal method 3:
+       *
+       * Save the current canvas before
+       * drawing the new patch.
+       */
+      if (
+        frame.disposalType ===
+        3
+      ) {
+        previousSnapshot =
+          ctx.getImageData(
+            0,
+            0,
+            width,
+            height,
+          );
       }
 
-      const patchCanvas = typeof OffscreenCanvas !== "undefined"
-        ? new OffscreenCanvas(frame.dims.width, frame.dims.height)
-        : document.createElement("canvas");
-      patchCanvas.width = frame.dims.width;
-      patchCanvas.height = frame.dims.height;
-      const patchCtx = patchCanvas.getContext("2d");
-      if (!patchCtx) throw new VideoEngineError("BROWSER_UNSUPPORTED", "Canvas processing is unavailable.");
-      const patchImage = patchCtx.createImageData(frame.dims.width, frame.dims.height);
-      patchImage.data.set(frame.patch);
-      patchCtx.putImageData(patchImage, 0, 0);
+      /*
+       * Create a temporary canvas
+       * containing the GIF patch.
+       */
+      const patchCanvas =
+        createCanvas(
+          frame.dims.width,
+          frame.dims.height,
+        );
+
+      const patchCtx =
+        getCanvas2DContext(
+          patchCanvas,
+        );
+
+      /*
+       * Convert the gifuct-js patch into
+       * ImageData-compatible memory.
+       */
+      const patchImageData =
+        toImageData(
+          frame.patch,
+          frame.dims.width,
+          frame.dims.height,
+        );
+
+      patchCtx.putImageData(
+        patchImageData,
+        0,
+        0,
+      );
+
+      /*
+       * Draw the patch onto the full
+       * animation canvas.
+       */
       ctx.drawImage(
         patchCanvas,
         frame.dims.left,
@@ -168,38 +827,170 @@ export async function gifToVideo(file: File, options: VideoProcessOptions = {}):
         frame.dims.height,
       );
 
-      const frameCanvasSource = canvas;
-      const duration = Math.max(0.02, (frame.delay || 50) / 1000);
-      const sample = new VideoSample(frameCanvasSource, {
-        timestamp,
-        duration,
-      });
-      await videoSource.add(sample);
-      sample.close();
-      timestamp += duration;
+      /*
+       * GIF delay is milliseconds.
+       *
+       * Minimum 20ms avoids invalid/zero-duration
+       * video samples.
+       */
+      const frameDuration =
+        Math.max(
+          0.02,
+          (
+            frame.delay ||
+            50
+          ) /
+            1000,
+        );
 
-      if (frame.disposalType === 2) {
-        ctx.clearRect(frame.dims.left, frame.dims.top, frame.dims.width, frame.dims.height);
-      } else if (frame.disposalType === 3 && previousSnapshot) {
-        ctx.putImageData(previousSnapshot, 0, 0);
-        previousSnapshot = null;
+      const sample =
+        new VideoSample(
+          canvas,
+          {
+            timestamp,
+
+            duration:
+              frameDuration,
+          },
+        );
+
+      try {
+        /*
+         * Await add() to preserve backpressure.
+         */
+        await videoSource.add(
+          sample,
+        );
+      } finally {
+        /*
+         * Release sample immediately.
+         */
+        sample.close();
+      }
+
+      timestamp +=
+        frameDuration;
+
+      /*
+       * GIF disposal method 2:
+       * clear the frame area.
+       */
+      if (
+        frame.disposalType ===
+        2
+      ) {
+        ctx.clearRect(
+          frame.dims.left,
+          frame.dims.top,
+          frame.dims.width,
+          frame.dims.height,
+        );
+      }
+
+      /*
+       * GIF disposal method 3:
+       * restore previous canvas state.
+       */
+      else if (
+        frame.disposalType ===
+          3 &&
+        previousSnapshot
+      ) {
+        ctx.putImageData(
+          previousSnapshot,
+          0,
+          0,
+        );
+
+        previousSnapshot =
+          null;
       }
 
       options.onProgress?.({
-        stage: "encoding",
-        progress: (i + 1) / frames.length,
-        processedSeconds: timestamp,
-        duration: timestamp,
-        message: "Encoding GIF frames into video...",
+        stage:
+          "encoding",
+
+        progress:
+          (i + 1) /
+          frames.length,
+
+        processedSeconds:
+          timestamp,
+
+        duration:
+          timestamp,
+
+        message:
+          "Encoding GIF frames into video...",
       });
     }
 
+    checkAbort(
+      options.signal,
+    );
+
     await output.finalize();
-    const target = output.target as BufferTarget;
-    if (!target.buffer) throw new VideoEngineError("OUTPUT_FAILED", "The video output buffer is empty.");
-    return new Blob([target.buffer], { type: "video/mp4" });
+
+    const target =
+      output.target;
+
+    if (
+      !(
+        target instanceof
+        BufferTarget
+      )
+    ) {
+      throw new VideoEngineError(
+        "OUTPUT_FAILED",
+        "The video output target is invalid.",
+      );
+    }
+
+    if (
+      !target.buffer
+    ) {
+      throw new VideoEngineError(
+        "OUTPUT_FAILED",
+        "The video output buffer is empty.",
+      );
+    }
+
+    /*
+     * BufferTarget.buffer is already a real
+     * ArrayBuffer.
+     *
+     * DO NOT convert it with uint8ArrayToArrayBuffer().
+     */
+    if (target.buffer.byteLength > 256 * 1024 * 1024) {
+      throw new VideoEngineError("MEMORY_LIMIT", "The generated video is too large to keep safely in browser memory.");
+    }
+    return new Blob(
+      [target.buffer],
+      {
+        type:
+          "video/mp4",
+      },
+    );
   } catch (error) {
-    try { await output.cancel(); } catch { /* best effort */ }
-    throw error;
+    try {
+      await output.cancel();
+    } catch {
+      /*
+       * Best-effort cleanup.
+       */
+    }
+
+    if (
+      error instanceof
+      VideoEngineError
+    ) {
+      throw error;
+    }
+
+    throw new VideoEngineError(
+      "PROCESSING_FAILED",
+      "The GIF could not be converted to video.",
+      error,
+    );
   }
 }

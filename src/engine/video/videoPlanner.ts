@@ -1,4 +1,6 @@
 import type { VideoEnginePlan, VideoProcessOptions, VideoToolId } from "./videoTypes";
+import { VideoEngineError } from "./videoTypes";
+import { isSupportedOutputFormat } from "./videoCapabilities";
 
 const VIDEO_TOOLS = new Set<VideoToolId>([
   "video-trimmer", "video-cutter", "video-merger", "video-compressor", "video-resizer",
@@ -11,63 +13,81 @@ export function planVideoOperation(
   toolId: VideoToolId,
   options: VideoProcessOptions = {},
 ): VideoEnginePlan {
-  if (!VIDEO_TOOLS.has(toolId)) throw new Error(`Unknown video tool: ${toolId}`);
+  if (!VIDEO_TOOLS.has(toolId)) {
+    throw new VideoEngineError("INVALID_OPTIONS", `Unknown video tool: ${toolId}`);
+  }
+
+  if (options.outputFormat !== undefined && !isSupportedOutputFormat(options.outputFormat)) {
+    throw new VideoEngineError("INVALID_OPTIONS", `Unsupported output format: ${String(options.outputFormat)}`);
+  }
 
   if (toolId === "video-metadata-viewer") {
-    return base("metadata", "mp4", false, false, false, false, false, "Metadata only; no encode required.", options);
+    return base("metadata", "mp4", false, false, false, false, false,
+      "Metadata only; no encode required.", options);
   }
 
   if (toolId === "video-to-gif") {
-    return base("gif-encode", "gif", true, false, false, true, false, "Decode selected frames and encode a GIF locally.", options);
+    return base("gif-encode", "gif", false, false, false, true, false,
+      "Decode selected video frames and encode a GIF locally.", options);
   }
 
   if (toolId === "gif-to-video") {
-    return base("gif-decode", options.outputFormat ?? "mp4", true, false, false, true, false, "Decode GIF frames locally and encode a browser-supported video.", options);
+    return base("gif-decode", options.outputFormat ?? "mp4", true, true, false, true, true,
+      "Decode GIF frames locally and encode a browser-supported video.", options);
   }
 
   if (toolId === "video-merger") {
-    return base("merge", options.outputFormat ?? "mp4", true, true, false, true, true, "Multiple inputs require a single normalized output timeline.", options);
+    return base("merge", options.outputFormat ?? "mp4", true, true, false, true, true,
+      "Multiple inputs require a normalized output timeline.", options);
   }
 
   if (toolId === "video-frame-extractor" || toolId === "video-thumbnail-generator" || toolId === "video-to-images") {
-    return base("frame-extract", "mp4", false, false, false, false, false, "Sparse/sequential frame decode; no video output encoding.", options);
+    return base("frame-extract", "mp4", false, false, false, false, false,
+      "Sparse/sequential frame decode; no video output encoding.", options);
   }
 
   const requiresCustomVideo = [
     "video-resizer", "video-cropper", "video-rotator", "video-flipper", "video-speed-changer",
   ].includes(toolId);
-  const requiresCustomAudio = ["video-volume-booster", "video-speed-changer"].includes(toolId);
-  const requiresCompression = toolId === "video-compressor";
+  const requiresCustomAudio = [
+    "video-volume-booster", "video-speed-changer",
+  ].includes(toolId);
   const removesAudio = toolId === "mute-video";
   const extractsAudio = toolId === "extract-audio-from-video";
-  const onlyContainerChange = toolId === "mp4-to-webm" || toolId === "webm-to-mp4";
-  const trimLike = toolId === "video-trimmer" || toolId === "video-cutter";
+  const compressor = toolId === "video-compressor";
 
-  const requiresVideoEncode = requiresCompression || requiresCustomVideo || onlyContainerChange;
-  const requiresAudioEncode = requiresCompression || requiresCustomAudio || onlyContainerChange;
-  const copyEligible = Boolean(options.preferCopy ?? true) && !requiresVideoEncode && !requiresAudioEncode && !removesAudio && !extractsAudio;
   const format = extractsAudio ? (options.audioOutputFormat ?? "wav") : (options.outputFormat ?? "mp4");
+  const trimLike = toolId === "video-trimmer" || toolId === "video-cutter";
+  const containerChange = toolId === "mp4-to-webm" || toolId === "webm-to-mp4";
 
-  let execution: VideoEnginePlan["execution"] = "transcode";
-  if (copyEligible || trimLike) execution = "copy";
+  // Copy/remux is a preferred attempt, never a guarantee. The container and
+  // actual source codec determine whether Mediabunny can retain the streams.
+  const copyEligible = Boolean(options.preferCopy ?? true) &&
+    !compressor && !requiresCustomVideo && !requiresCustomAudio && !removesAudio && !extractsAudio;
 
-  let reason = "Mediabunny will copy encoded media when possible and transcode only when required.";
-  if (requiresCompression) reason = "Compression requires re-encoding so the selected quality can reduce media bitrate/size.";
-  else if (requiresCustomVideo) reason = "Video-frame processing requires video decoding and re-encoding; compatible audio can remain copied.";
-  else if (requiresCustomAudio) reason = "Audio processing requires audio decoding and re-encoding; compatible video can remain copied.";
-  else if (removesAudio) reason = "The primary audio track is discarded; video can remain stream-copied when the output container permits it.";
-  else if (onlyContainerChange) reason = "The output container changes, so compatible tracks are copied and incompatible tracks are transcoded.";
-  else if (trimLike) reason = "Trimming prefers stream-copy at packet/keyframe boundaries when possible.";
+  const requiresVideoEncode = compressor || requiresCustomVideo;
+  const requiresAudioEncode = requiresCustomAudio;
+  const execution = requiresVideoEncode || requiresAudioEncode
+    ? "transcode"
+    : copyEligible || trimLike || containerChange
+      ? "copy"
+      : "transcode";
 
   return base(
     execution,
     format,
     requiresVideoEncode,
-    requiresAudioEncode,
-    copyEligible || trimLike,
-    requiresCustomVideo,
+    !removesAudio && requiresAudioEncode,
+    copyEligible,
+    requiresCustomVideo || compressor,
     requiresCustomAudio,
-    reason,
+    compressor
+      ? "Compression requires video re-encoding; unaffected audio can remain on the copy path when compatible."
+      : trimLike
+        ? "Fast trim/cut prefers stream copy and only transcodes when required."
+        : requiresCustomVideo || requiresCustomAudio
+          ? "This operation requires decoding and re-encoding the affected media track(s)."
+          : "Encoded media is copied whenever the requested container and codecs are compatible.",
     options,
   );
 }
@@ -78,8 +98,8 @@ function base(
   requiresVideoEncode: boolean,
   requiresAudioEncode: boolean,
   usesCopyPath: boolean,
-  usesCustomVideoProcessing: boolean,
-  usesCustomAudioProcessing: boolean,
+  customVideo: boolean,
+  customAudio: boolean,
   reason: string,
   options: VideoProcessOptions,
 ): VideoEnginePlan {
@@ -89,9 +109,9 @@ function base(
     requiresVideoEncode,
     requiresAudioEncode,
     usesCopyPath,
-    usesCustomVideoProcessing,
-    usesCustomAudioProcessing,
-    usesStreamingTarget: Boolean(options.saveDirectlyToDisk),
+    usesCustomVideoProcessing: customVideo,
+    usesCustomAudioProcessing: customAudio,
+    usesStreamingTarget: Boolean(options.streamDownload || options.downloadStream),
     hardwareAcceleration: options.hardwareAcceleration ?? "no-preference",
     reason,
   };

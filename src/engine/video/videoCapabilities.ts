@@ -2,20 +2,28 @@ import {
   ALL_FORMATS,
   BlobSource,
   Input,
-  Mp4OutputFormat,
-  WebMOutputFormat,
   MovOutputFormat,
   MkvOutputFormat,
+  Mp4OutputFormat,
+  WebMOutputFormat,
   getDecodableAudioCodecs,
   getDecodableVideoCodecs,
   getEncodableAudioCodecs,
   getEncodableVideoCodecs,
 } from "mediabunny";
 
-import type { VideoCapabilityReport, VideoOutputFormat } from "@/engine/video/videoTypes";
+import type { VideoCapabilityReport, VideoOutputFormat } from "./videoTypes";
+import { VideoEngineError } from "./videoTypes";
+
+const VIDEO_OUTPUT_FORMATS = ["mp4", "webm", "mov", "mkv"] as const satisfies readonly VideoOutputFormat[];
 
 export async function getVideoCapabilities(): Promise<VideoCapabilityReport> {
-  const [decodableVideoCodecs, encodableVideoCodecs, decodableAudioCodecs, encodableAudioCodecs] = await Promise.all([
+  const [
+    decodableVideoCodecs,
+    encodableVideoCodecs,
+    decodableAudioCodecs,
+    encodableAudioCodecs,
+  ] = await Promise.all([
     getDecodableVideoCodecs(),
     getEncodableVideoCodecs(),
     getDecodableAudioCodecs(),
@@ -24,31 +32,37 @@ export async function getVideoCapabilities(): Promise<VideoCapabilityReport> {
 
   return {
     canUseWebCodecs:
-      typeof VideoDecoder !== "undefined" && typeof VideoEncoder !== "undefined",
+      typeof VideoDecoder !== "undefined" &&
+      typeof VideoEncoder !== "undefined",
     decodableVideoCodecs: [...decodableVideoCodecs],
     encodableVideoCodecs: [...encodableVideoCodecs],
     decodableAudioCodecs: [...decodableAudioCodecs],
     encodableAudioCodecs: [...encodableAudioCodecs],
-    supportedOutputFormats: getSupportedOutputFormats(),
+    // These are containers implemented by WorkAbhi, not a claim that every
+    // browser can encode every codec in every container.
+    supportedOutputFormats: [...VIDEO_OUTPUT_FORMATS],
     fileSystemAccess:
-      typeof window !== "undefined" && "showSaveFilePicker" in window,
+      typeof window !== "undefined" &&
+      "showSaveFilePicker" in window,
     deviceMemoryGB:
       typeof navigator !== "undefined"
         ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? null
         : null,
     hardwareConcurrency:
-      typeof navigator !== "undefined" ? navigator.hardwareConcurrency ?? null : null,
+      typeof navigator !== "undefined"
+        ? navigator.hardwareConcurrency ?? null
+        : null,
   };
 }
 
 export function getSupportedOutputFormats(): VideoOutputFormat[] {
-  return ["mp4", "webm", "mov", "mkv"];
+  return [...VIDEO_OUTPUT_FORMATS];
 }
 
-/**
- * Cheap local capability probe for a particular file. BlobSource is lazy/ranged;
- * it does not require copying the complete file into a second ArrayBuffer.
- */
+export function isSupportedOutputFormat(value: unknown): value is VideoOutputFormat {
+  return typeof value === "string" && (VIDEO_OUTPUT_FORMATS as readonly string[]).includes(value);
+}
+
 export async function canReadVideoFile(file: File): Promise<boolean> {
   const input = new Input({
     source: new BlobSource(file),
@@ -62,23 +76,37 @@ export async function canReadVideoFile(file: File): Promise<boolean> {
   }
 }
 
-export function outputMimeType(format: VideoOutputFormat | "wav" | "mp3" | "gif"): string {
+export function outputMimeType(
+  format: VideoOutputFormat | "wav" | "mp3" | "gif",
+): string {
   switch (format) {
+    case "mp4": return "video/mp4";
     case "webm": return "video/webm";
     case "mov": return "video/quicktime";
     case "mkv": return "video/x-matroska";
     case "wav": return "audio/wav";
     case "mp3": return "audio/mpeg";
     case "gif": return "image/gif";
-    default: return "video/mp4";
+    default: throw new VideoEngineError("INVALID_OPTIONS", `Unsupported output format: ${String(format)}`);
   }
 }
 
 export function outputFormatInstance(format: VideoOutputFormat) {
   switch (format) {
+    case "mp4": return new Mp4OutputFormat();
     case "webm": return new WebMOutputFormat();
     case "mov": return new MovOutputFormat();
     case "mkv": return new MkvOutputFormat();
-    default: return new Mp4OutputFormat();
+    default: throw new VideoEngineError("INVALID_OPTIONS", `Unsupported output format: ${String(format)}`);
+  }
+}
+
+export function streamingOutputFormatInstance(format: VideoOutputFormat) {
+  switch (format) {
+    case "mp4": return new Mp4OutputFormat({ fastStart: "fragmented" });
+    case "webm": return new WebMOutputFormat({ appendOnly: true });
+    case "mov": return new MovOutputFormat({ fastStart: "fragmented" });
+    case "mkv": return new MkvOutputFormat({ appendOnly: true });
+    default: throw new VideoEngineError("INVALID_OPTIONS", `Unsupported output format: ${String(format)}`);
   }
 }

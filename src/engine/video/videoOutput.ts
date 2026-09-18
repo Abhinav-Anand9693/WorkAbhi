@@ -1,73 +1,113 @@
-import { BufferTarget, Output, StreamTarget } from "mediabunny";
-import type { VideoOutputFormat } from "@/engine/video/videoTypes";
-import { outputFormatInstance } from "./videoCapabilities";
-import { VideoEngineError } from "@/engine/video/videoTypes";
+import {
+  AppendOnlyStreamTarget,
+  BufferTarget,
+  Mp3OutputFormat,
+  Output,
+  WavOutputFormat,
+} from "mediabunny";
 
-interface SaveFilePickerOptionsLike {
-  suggestedName?: string;
-  types?: Array<{
-    description?: string;
-    accept: Record<string, string[]>;
-  }>;
-}
-
-interface FileSystemFileHandleLike {
-  createWritable(): Promise<FileSystemWritableFileStream>;
-}
-
-interface WindowWithSavePicker extends Window {
-  showSaveFilePicker?: (options?: SaveFilePickerOptionsLike) => Promise<FileSystemFileHandleLike>;
-}
+import type { AudioOutputFormat, VideoOutputFormat } from "./videoTypes";
+import { outputFormatInstance, streamingOutputFormatInstance } from "./videoCapabilities";
+import { VideoEngineError } from "./videoTypes";
 
 export interface OutputContext {
   output: Output;
   bufferTarget: BufferTarget | null;
-  directToDisk: boolean;
+  streamedDownload: boolean;
 }
 
+/**
+ * Creates an output target.
+ *
+ * Large browser downloads use AppendOnlyStreamTarget + StreamSaver's
+ * WritableStream. No File System Access save picker is involved.
+ */
 export async function createVideoOutput(
   format: VideoOutputFormat,
-  filename: string,
-  directToDisk: boolean,
+  _filename: string,
+  streamDownload: boolean,
+  downloadStream?: WritableStream<Uint8Array> | null,
 ): Promise<OutputContext> {
-  const outputFormat = outputFormatInstance(format);
-
-  if (directToDisk) {
-    const picker = (window as WindowWithSavePicker).showSaveFilePicker;
-    if (!picker) {
+  if (streamDownload) {
+    if (!downloadStream) {
       throw new VideoEngineError(
-        "BROWSER_UNSUPPORTED",
-        "Direct-to-disk saving is not supported by this browser. Turn off direct saving and use the normal download instead.",
+        "OUTPUT_FAILED",
+        "The browser download stream could not be created.",
       );
     }
 
-    const handle = await picker({ suggestedName: filename });
-    const writable = await handle.createWritable();
     return {
       output: new Output({
-        format: outputFormat,
-        target: new StreamTarget(writable, { chunked: true }),
+        format: streamingOutputFormatInstance(format),
+        target: new AppendOnlyStreamTarget(downloadStream),
       }),
       bufferTarget: null,
-      directToDisk: true,
+      streamedDownload: true,
     };
   }
 
   const bufferTarget = new BufferTarget();
+
+  return {
+    output: new Output({
+      format: outputFormatInstance(format),
+      target: bufferTarget,
+    }),
+    bufferTarget,
+    streamedDownload: false,
+  };
+}
+
+export async function createAudioOutput(
+  format: AudioOutputFormat,
+  _filename: string,
+  streamDownload: boolean,
+  downloadStream?: WritableStream<Uint8Array> | null,
+): Promise<OutputContext> {
+  // MP3 can be made append-only by disabling its Xing header. WAVE needs
+  // final header information, so it intentionally remains a memory output.
+  if (streamDownload && format === "mp3") {
+    if (!downloadStream) {
+      throw new VideoEngineError(
+        "OUTPUT_FAILED",
+        "The browser download stream could not be created.",
+      );
+    }
+
+    return {
+      output: new Output({
+        format: new Mp3OutputFormat({ xingHeader: false }),
+        target: new AppendOnlyStreamTarget(downloadStream),
+      }),
+      bufferTarget: null,
+      streamedDownload: true,
+    };
+  }
+
+  const bufferTarget = new BufferTarget();
+  const outputFormat = format === "mp3"
+    ? new Mp3OutputFormat({ xingHeader: false })
+    : new WavOutputFormat();
+
   return {
     output: new Output({
       format: outputFormat,
       target: bufferTarget,
     }),
     bufferTarget,
-    directToDisk: false,
+    streamedDownload: false,
   };
 }
 
 export function getOutputBuffer(output: Output): ArrayBuffer {
   const target = output.target;
+
   if (!(target instanceof BufferTarget) || !target.buffer) {
-    throw new VideoEngineError("OUTPUT_FAILED", "The video output was written directly to disk and has no in-memory buffer.");
+    throw new VideoEngineError(
+      "OUTPUT_FAILED",
+      "The video output was not kept in browser memory.",
+    );
   }
+
   return target.buffer;
 }
