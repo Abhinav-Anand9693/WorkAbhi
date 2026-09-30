@@ -50,9 +50,13 @@ function ensurePdfFile(file: File) {
   }
 }
 
-async function loadPdf(file: File): Promise<PDFDocument> {
+async function loadPdf(file: File, signal?: AbortSignal): Promise<PDFDocument> {
+  assertNotAborted(signal);
   ensurePdfFile(file);
   const bytes = new Uint8Array(await file.arrayBuffer());
+  assertNotAborted(signal);
+  const header = new TextDecoder().decode(bytes.slice(0, 8));
+  if (!header.startsWith("%PDF-")) throw new PdfEngineError("NOT_PDF", "The selected file does not contain a valid PDF header.");
   try {
     const pdf = await PDFDocument.load(bytes, {
       ignoreEncryption: false,
@@ -78,8 +82,10 @@ function bytesToBlob(bytes: Uint8Array) {
   return new Blob([bytes as BlobPart], { type: "application/pdf" });
 }
 
-async function savePdf(pdf: PDFDocument, filename: string): Promise<PdfOutput> {
+async function savePdf(pdf: PDFDocument, filename: string, signal?: AbortSignal): Promise<PdfOutput> {
+  assertNotAborted(signal);
   const bytes = await pdf.save({ useObjectStreams: true });
+  assertNotAborted(signal);
   const blob = bytesToBlob(bytes);
   return {
     blob,
@@ -148,8 +154,11 @@ async function makePdfFromImage(file: File, signal?: AbortSignal, onProgress?: (
     throw new PdfEngineError("UNSUPPORTED", "Unsupported image format.");
   }
   const dims = image.scale(1);
-  const page = pdf.addPage([dims.width, dims.height]);
-  page.drawImage(image, { x: 0, y: 0, width: dims.width, height: dims.height });
+  const pageWidth = 595.28, pageHeight = 841.89, margin = 36;
+  const fit = Math.min((pageWidth - margin * 2) / dims.width, (pageHeight - margin * 2) / dims.height, 1);
+  const width = dims.width * fit, height = dims.height * fit;
+  const page = pdf.addPage([pageWidth, pageHeight]);
+  page.drawImage(image, { x: (pageWidth - width) / 2, y: (pageHeight - height) / 2, width, height });
   report(1, "PDF created", onProgress);
   return savePdf(pdf, `${file.name.replace(/\.[^.]+$/, "")}.pdf`);
 }
@@ -174,6 +183,8 @@ async function imageFileToPngBytes(file: File): Promise<Uint8Array> {
 
 async function imagesToPdf(files: File[], signal?: AbortSignal, onProgress?: (p: PdfProgress) => void) {
   if (!files.length) throw new PdfEngineError("INVALID_INPUT", "Select at least one image.");
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  if (files.some((file) => file.size > MAX_INPUT_BYTES) || totalBytes > MAX_INPUT_BYTES) throw new PdfEngineError("TOO_LARGE", "The selected images exceed the safe browser processing limit of 256 MB combined.");
   const pdf = await PDFDocument.create();
   for (let i = 0; i < files.length; i++) {
     assertNotAborted(signal);
@@ -188,7 +199,10 @@ async function imagesToPdf(files: File[], signal?: AbortSignal, onProgress?: (p:
     else if (mime === "image/tiff" || /\.tiff?$/i.test(file.name)) throw new PdfEngineError("UNSUPPORTED", `TIFF is not supported by the current browser image decoder: ${file.name}`);
     else throw new PdfEngineError("UNSUPPORTED", `Unsupported image format: ${file.name}`);
     const dims = image.scale(1);
-    pdf.addPage([dims.width, dims.height]).drawImage(image, { x: 0, y: 0, width: dims.width, height: dims.height });
+    const pageWidth = 595.28, pageHeight = 841.89, margin = 36;
+    const fit = Math.min((pageWidth - margin * 2) / dims.width, (pageHeight - margin * 2) / dims.height, 1);
+    const width = dims.width * fit, height = dims.height * fit;
+    pdf.addPage([pageWidth, pageHeight]).drawImage(image, { x: (pageWidth - width) / 2, y: (pageHeight - height) / 2, width, height });
     report((i + 1) / files.length, `Added ${file.name}`, onProgress);
   }
   return savePdf(pdf, "images-to-pdf.pdf");
@@ -201,8 +215,11 @@ async function copySelectedPages(
   onProgress?: (p: PdfProgress) => void,
 ) {
   if (!indices.length) throw new PdfEngineError("INVALID_OPTIONS", "Select at least one page.");
+  const unique = [...new Set(indices)];
+  const count = source.getPageCount();
+  if (unique.some((index) => !Number.isInteger(index) || index < 0 || index >= count)) throw new PdfEngineError("PAGE_RANGE", "One or more selected pages are outside the PDF page range.");
   const out = await PDFDocument.create();
-  const pages = await out.copyPages(source, indices);
+  const pages = await out.copyPages(source, unique);
   for (let i = 0; i < pages.length; i++) {
     assertNotAborted(signal);
     out.addPage(pages[i]);
@@ -225,6 +242,7 @@ function metadata(pdf: PDFDocument) {
     encrypted: pdf.isEncrypted,
     hasForm: pdf.getForm().getFields().length > 0,
     hasXFA: pdf.getForm().hasXFA(),
+    formFields: pdf.getForm().getFields().map((field) => ({ name: field.getName(), type: field.constructor.name, options: (() => { try { return (field as unknown as { getOptions?: () => string[] }).getOptions?.() ?? []; } catch { return []; } })() })),
   };
 }
 
@@ -241,9 +259,11 @@ function clearMetadata(pdf: PDFDocument) {
   pdf.setModificationDate(new Date(0));
 }
 
-function drawPageNumbers(pdf: PDFDocument, start: number, position: PdfProcessOptions["pageNumberPosition"], color: ReturnType<typeof rgb>) {
+function drawPageNumbers(pdf: PDFDocument, start: number, position: PdfProcessOptions["pageNumberPosition"], color: ReturnType<typeof rgb>, indices?: number[]) {
   const font = pdf.embedStandardFont(StandardFonts.Helvetica);
-  pdf.getPages().forEach((page, index) => {
+  const targetIndices = indices?.length ? indices : pdf.getPageIndices();
+  targetIndices.forEach((pageIndex, index) => {
+    const page = pageForIndex(pdf, pageIndex);
     const { width, height } = page.getSize();
     const label = String(start + index);
     const size = 10;
@@ -266,7 +286,8 @@ async function annotatePdf(
 ): Promise<PdfOutput> {
   const pdf = await loadPdf(file);
   const pages = pdf.getPages();
-  const selected = options.pages?.length ? options.pages : [0];
+  const selected = options.pages?.length ? [...new Set(options.pages)] : [];
+  if (!selected.length) throw new PdfEngineError("INVALID_OPTIONS", "Select at least one page for this operation.");
   const color = hexColor(options.color);
   const font = pdf.embedStandardFont(StandardFonts.Helvetica);
   const size = Math.max(6, Math.min(96, options.fontSize ?? 18));
@@ -322,9 +343,7 @@ async function annotatePdf(
         );
       }
 
-      const image = await pdf.embedPng(
-        options.imageBytes,
-      );
+      const image = options.imageMimeType === "image/jpeg" ? await pdf.embedJpg(options.imageBytes) : await pdf.embedPng(options.imageBytes);
 
       const position =
         options.imagePosition ?? "center";
@@ -428,7 +447,8 @@ async function annotatePdf(
       }
 
       const signature = await pdf.embedPng(options.signatureBytes);
-      const dims = signature.scale(Math.min(1, 240 / signature.width));
+      const signatureScale = Math.max(5, Math.min(100, options.imageScale ?? 35)) / 100;
+      const dims = signature.scale(Math.min(signatureScale, 240 / signature.width));
       page.drawImage(signature, {
         x: point.x,
         y: point.y,
@@ -447,7 +467,7 @@ async function fillForm(file: File, options: PdfProcessOptions, mode: "text" | "
   const form = pdf.getForm();
   const fields = form.getFields();
   if (!fields.length) throw new PdfEngineError("UNSUPPORTED", "This PDF does not contain standard AcroForm fields. XFA forms are not supported.");
-  const values = options.formValues ?? {};
+  const values = options.formValues ?? options.formFieldValues ?? {};
   for (const field of fields) {
     const name = field.getName();
     const value = values[name];
@@ -497,7 +517,9 @@ async function pdfToImages(
       canvas.height = Math.ceil(viewport.height);
       const ctx = canvas.getContext("2d", { alpha: false });
       if (!ctx) throw new PdfEngineError("BROWSER_UNSUPPORTED", "Canvas is unavailable in this browser.");
-      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+      const renderTask = page.render({ canvas, canvasContext: ctx, viewport });
+      signal?.addEventListener("abort", () => renderTask.cancel(), { once: true });
+      try { await renderTask.promise; } catch (error) { if (signal?.aborted) throw new PdfEngineError("CANCELLED", "PDF rendering was cancelled."); throw error; }
       const mime = options.imageMimeType ?? "image/png";
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, 0.92));
       if (!blob) throw new PdfEngineError("UNSUPPORTED", "The browser could not encode the rendered page.");
@@ -550,24 +572,45 @@ export async function processPdf(
     const lines = text.replace(/\r\n/g, "\n").split("\n");
     const pageWidth = 595.28;
     const pageHeight = 841.89;
-    let page = pdf.addPage([pageWidth, pageHeight]);
-    let y = pageHeight - 50;
-    for (const line of lines) {
-      if (y < 50) {
-        page = pdf.addPage([pageWidth, pageHeight]);
-        y = pageHeight - 50;
+    const margin = 50;
+    const fontSize = 12;
+    const lineHeight = 18;
+    const maxWidth = pageWidth - margin * 2;
+    const wrap = (value: string) => {
+      const words = value.split(/\s+/);
+      const result: string[] = [];
+      let current = "";
+      for (const word of words) {
+        const candidate = current ? current + " " + word : word;
+        if (font.widthOfTextAtSize(candidate, fontSize) <= maxWidth) current = candidate;
+        else if (current) { result.push(current); current = word; }
+        else {
+          let chunk = "";
+          for (const char of word) {
+            const next = chunk + char;
+            if (font.widthOfTextAtSize(next, fontSize) > maxWidth && chunk) { result.push(chunk); chunk = char; } else chunk = next;
+          }
+          current = chunk;
+        }
       }
-      page.drawText(line.slice(0, 180), { x: 50, y, size: 12, font, color: rgb(0.12, 0.12, 0.12) });
-      y -= 18;
+      if (current || !result.length) result.push(current);
+      return result;
+    };
+    let page = pdf.addPage([pageWidth, pageHeight]);
+    let y = pageHeight - margin;
+    for (const line of lines.flatMap(wrap)) {
+      assertNotAborted(signal);
+      if (y < margin) { page = pdf.addPage([pageWidth, pageHeight]); y = pageHeight - margin; }
+      page.drawText(line, { x: margin, y, size: fontSize, font, color: rgb(0.12, 0.12, 0.12), maxWidth });
+      y -= lineHeight;
     }
-    return savePdf(pdf, "text-to-pdf.pdf");
+    return savePdf(pdf, "text-to-pdf.pdf", signal);
   }
 
   if (toolId === "pdf-hash-generator") {
     const file = files[0];
     ensurePdfFile(file);
-    const data = await file.arrayBuffer();
-    const algorithm = options.hashAlgorithm ?? "SHA-256";
+    assertNotAborted(signal);\n    const data = await file.arrayBuffer();\n    assertNotAborted(signal);\n    const algorithm = options.hashAlgorithm ?? "SHA-256";
     const digest = await crypto.subtle.digest(algorithm, data);
     const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
     return { text: `${algorithm}: ${hex}` };
@@ -660,27 +703,37 @@ export async function processPdf(
   if (toolId === "pdf-flatten-tool") return fillForm(files[0], options, "text", true);
 
   if (toolId === "pdf-page-numbering") {
-    drawPageNumbers(pdf, options.pageNumberStart ?? 1, options.pageNumberPosition ?? "bottom-center", hexColor(options.color));
+    const targetPages = options.pages?.length ? [...new Set(options.pages)] : pdf.getPageIndices();
+    if (targetPages.some((i) => i < 0 || i >= pdf.getPageCount())) throw new PdfEngineError("PAGE_RANGE", "One or more page numbers are outside the PDF.");
+    drawPageNumbers(pdf, options.pageNumberStart ?? 1, options.pageNumberPosition ?? "bottom-center", hexColor(options.color), targetPages);
     return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-numbered.pdf`);
   }
 
   if (["rotate-pdf", "delete-pdf-pages", "extract-pdf-pages", "reorder-pdf-pages", "duplicate-pdf-pages", "reverse-pdf-pages", "split-pdf", "pdf-page-organizer"].includes(toolId)) {
     const count = pdf.getPageCount();
-    let indices = options.pages?.length ? options.pages : Array.from({ length: count }, (_, i) => i);
-
+    const all = Array.from({ length: count }, (_, i) => i);
+    let indices = options.pages?.length ? [...new Set(options.pages)] : [];
+    const destructive = new Set<PdfToolId>(["rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages","duplicate-pdf-pages","reverse-pdf-pages","split-pdf","pdf-page-organizer"]);
+    if (destructive.has(toolId) && !indices.length && toolId !== "split-pdf") throw new PdfEngineError("INVALID_OPTIONS", "Select or enter at least one page before processing.");
+    if (indices.some((i) => !Number.isInteger(i) || i < 0 || i >= count)) throw new PdfEngineError("PAGE_RANGE", "One or more selected pages are outside the PDF.");
     if (toolId === "delete-pdf-pages") {
       const remove = new Set(indices);
-      indices = Array.from({ length: count }, (_, i) => i).filter((i) => !remove.has(i));
+      indices = all.filter((i) => !remove.has(i));
       if (!indices.length) throw new PdfEngineError("INVALID_OPTIONS", "You cannot delete every page.");
     } else if (toolId === "reverse-pdf-pages") {
-      indices.reverse();
-    } else if (toolId === "reorder-pdf-pages") {
-      if (!options.pageOrder?.length) throw new PdfEngineError("INVALID_OPTIONS", "Provide a page order.");
-      indices = options.pageOrder;
+      indices = [...indices].reverse();
+    } else if (toolId === "reorder-pdf-pages" || toolId === "pdf-page-organizer") {
+      if (!options.pageOrder?.length) throw new PdfEngineError("INVALID_OPTIONS", "Provide a complete page order, for example 3,1,2.");
+      const order = options.pageOrder;
+      if (order.length !== count || new Set(order).size !== count || order.some((i) => !Number.isInteger(i) || i < 0 || i >= count)) throw new PdfEngineError("INVALID_OPTIONS", "Page order must contain every page exactly once.");
+      indices = [...order];
     } else if (toolId === "duplicate-pdf-pages") {
-      const index = options.duplicatePage ?? indices[0] ?? 0;
-      if (index < 0 || index >= count) throw new PdfEngineError("PAGE_RANGE", "The duplicate page is outside the PDF.");
-      indices = [index, ...Array.from({ length: count }, (_, i) => i)];
+      const index = options.duplicatePage ?? indices[0];
+      if (index === undefined || index < 0 || index >= count) throw new PdfEngineError("PAGE_RANGE", "Choose a valid page to duplicate.");
+      const position = Math.max(0, Math.min(count, Math.floor(options.duplicatePosition ?? index + 1)));
+      const order = all.slice();
+      order.splice(position, 0, index);
+      indices = order;
     }
 
     if (toolId === "rotate-pdf") {
@@ -689,18 +742,18 @@ export async function processPdf(
         const page = pageForIndex(pdf, index);
         page.setRotation(degrees(rotation));
       }
-      return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-rotated.pdf`);
+      return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-rotated.pdf`, signal);
     }
 
     if (toolId === "split-pdf") {
-      const chunks = options.pages?.length ? [options.pages] : Array.from({ length: count }, (_, i) => [i]);
-      const first = chunks[0];
-      const split = await copySelectedPages(pdf, first, signal, onProgress);
-      return savePdf(split, `${files[0].name.replace(/\.pdf$/i, "")}-split-1.pdf`);
+      const chunks = options.pageGroups?.length ? options.pageGroups : options.pages?.length ? [options.pages] : Array.from({ length: count }, (_, i) => [i]);
+      const outputs: PdfOutput[] = [];
+      for (let i = 0; i < chunks.length; i++) { assertNotAborted(signal); const split = await copySelectedPages(pdf, chunks[i], signal, onProgress); outputs.push(await savePdf(split, `${files[0].name.replace(/\.pdf$/i, "")}-split-${i + 1}.pdf`, signal)); }
+      return { outputs, ...(outputs.length === 1 ? outputs[0] : {}) };
     }
 
     const out = await copySelectedPages(pdf, indices, signal, onProgress);
-    return savePdf(out, `${files[0].name.replace(/\.pdf$/i, "")}-pages.pdf`);
+    return savePdf(out, `${files[0].name.replace(/\.pdf$/i, "")}-pages.pdf`, signal);
   }
 
   if (["pdf-watermark", "pdf-stamp", "add-text-to-pdf", "add-image-to-pdf", "add-signature-to-pdf", "pdf-highlight-tool", "pdf-drawing-tool", "pdf-annotation-tool", "pdf-whiteout-tool"].includes(toolId)) {
