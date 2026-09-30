@@ -316,12 +316,12 @@ async function annotatePdf(
       page.drawText(options.text || "Text", { x: point.x, y: point.y, size, font, color });
     } else if (toolId === "pdf-highlight-tool") {
       const w = Math.min(width - point.x, Math.max(40, options.whiteout?.width ?? 180));
-      const h = Math.min(height - point.y, Math.max(12, options.whiteout?.height ?? 24));
-      page.drawRectangle({ x: point.x, y: point.y, width: w, height: h, color: rgb(1, 0.85, 0.05), opacity: 0.32 });
+      const h = Math.min(point.y, Math.max(12, options.whiteout?.height ?? 24));
+      page.drawRectangle({ x: point.x, y: point.y - h, width: w, height: h, color: rgb(1, 0.85, 0.05), opacity: 0.32 });
     } else if (toolId === "pdf-whiteout-tool") {
       const w = Math.min(width - point.x, Math.max(20, options.whiteout?.width ?? 180));
-      const h = Math.min(height - point.y, Math.max(20, options.whiteout?.height ?? 40));
-      page.drawRectangle({ x: point.x, y: point.y, width: w, height: h, color: rgb(1, 1, 1), opacity: 1 });
+      const h = Math.min(point.y, Math.max(20, options.whiteout?.height ?? 40));
+      page.drawRectangle({ x: point.x, y: point.y - h, width: w, height: h, color: rgb(1, 1, 1), opacity: 1 });
     } else if (toolId === "pdf-drawing-tool") {
       for (const line of options.drawing ?? []) {
         const a = pagePoint(page, line.x1, line.y1);
