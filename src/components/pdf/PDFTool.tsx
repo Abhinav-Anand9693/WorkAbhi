@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent } from "react";
 import type { PdfToolId, PdfProcessOptions, PdfOutput } from "@/engine/pdf/pdfTypes";
 import { PdfEngineError } from "@/engine/pdf/pdfTypes";
 import { processPdf, inspectPdf } from "@/engine/pdf/pdfEngine";
@@ -25,7 +26,7 @@ const PAGE_TOOLS = new Set<PdfToolId>([
 ]);
 
 const IMAGE_TO_PDF = new Set<PdfToolId>(["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf"]);
-const IMAGE_OUTPUT = new Set<PdfToolId>(["pdf-to-jpg","pdf-to-png","pdf-to-webp","pdf-to-images","pdf-pages-to-images"]);
+const IMAGE_OUTPUT_IDS = new Set<PdfToolId>(["pdf-to-jpg","pdf-to-png","pdf-to-webp","pdf-to-images","pdf-pages-to-images"]);
 const FORM_TOOLS = new Set<PdfToolId>(["pdf-form-filler","pdf-checkbox-filler","pdf-radio-button-filler","pdf-flatten-tool"]);
 const DESTRUCTIVE = new Set<PdfToolId>(["delete-pdf-pages","rotate-pdf","reverse-pdf-pages","reorder-pdf-pages","pdf-page-organizer","duplicate-pdf-pages"]);
 
@@ -252,7 +253,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
     if (signatureInputRef.current) signatureInputRef.current.value="";
   }
 
-  function drawPointer(e: React.PointerEvent<HTMLCanvasElement>) {
+  function drawPointer(e: PointerEvent<HTMLCanvasElement>) {
     const canvas = drawingCanvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -266,7 +267,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
 
   if (!PDF_TOOLS.has(id)) return <div className="rounded-2xl border p-6">Unsupported PDF tool.</div>;
 
-  const showPagesInput = ["delete-pdf-pages","extract-pdf-pages","rotate-pdf","reverse-pdf-pages"].includes(id);
+  const showPagesInput = ["delete-pdf-pages","extract-pdf-pages","rotate-pdf","reverse-pdf-pages"].includes(id) || IMAGE_OUTPUT_IDS.has(id);
   const showPageOrder = ["reorder-pdf-pages","pdf-page-organizer"].includes(id);
   const showAnnotation = ["pdf-watermark","pdf-stamp","add-text-to-pdf","pdf-annotation-tool","pdf-highlight-tool","pdf-whiteout-tool","add-image-to-pdf","add-signature-to-pdf"].includes(id);
 
@@ -287,7 +288,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">{pages.map((index)=><button key={index} type="button" className={`overflow-hidden rounded-xl border text-left ${selected.includes(index)?"ring-2 ring-primary":""}`} onClick={()=>{togglePage(index);void renderThumbnail(index);}} onFocus={()=>void renderThumbnail(index)}>{pageImages[index]?<Image src={pageImages[index]} alt={`Page ${index+1} preview`} width={600} height={800} unoptimized className="aspect-[3/4] w-full object-cover"/>:<div className="flex aspect-[3/4] items-center justify-center bg-muted text-sm">Page {index+1}</div>}<div className="p-2 text-xs">Page {index+1}</div></button>)}</div>
       </div>}
 
-      {showPagesInput&&<label className="block text-sm">Pages<input className="mt-2 w-full rounded-xl border p-3" placeholder="Example: 1,3-5" value={pageInput} onChange={(e)=>setPageInput(e.target.value)}/></label>}
+      {showPagesInput&&<label className="block text-sm">{IMAGE_OUTPUT_IDS.has(id) ? "Pages (optional; leave empty for all pages)" : "Pages"}<input className="mt-2 w-full rounded-xl border p-3" placeholder="Example: 1,3-5" value={pageInput} onChange={(e)=>setPageInput(e.target.value)}/></label>}
       {id==="split-pdf"&&<label className="block text-sm">Split groups<input className="mt-2 w-full rounded-xl border p-3" placeholder="Example: 1-3;4-6;7" value={splitGroupsInput} onChange={(e)=>setSplitGroupsInput(e.target.value)}/><span className="mt-1 block text-xs text-muted-foreground">Use semicolons to create separate PDF outputs.</span></label>}
       {showPageOrder&&<label className="block text-sm">Complete page order<input className="mt-2 w-full rounded-xl border p-3" placeholder="Example: 3,1,2,4" value={pageOrderInput} onChange={(e)=>setPageOrderInput(e.target.value)}/></label>}
       {id==="duplicate-pdf-pages"&&<label className="block text-sm">Duplicate insertion position<input className="mt-2 w-full rounded-xl border p-3" type="number" min={1} max={Math.max(1,pages.length+1)} value={Number(options.duplicatePosition ?? ((selected[0]??0)+2))} onChange={(e)=>setOption("duplicatePosition",Math.max(0,Number(e.target.value)-1))}/></label>}
