@@ -95,27 +95,6 @@ async function savePdf(pdf: PDFDocument, filename: string, signal?: AbortSignal)
   };
 }
 
-function parsePageNumbers(value: string, pageCount: number): number[] {
-  const result: number[] = [];
-  const parts = value.split(",").map((x) => x.trim()).filter(Boolean);
-  for (const part of parts) {
-    if (/^\d+$/.test(part)) {
-      const n = Number(part) - 1;
-      if (n < 0 || n >= pageCount) throw new PdfEngineError("PAGE_RANGE", `Page ${part} is outside the PDF page range.`);
-      result.push(n);
-    } else if (/^\d+\s*-\s*\d+$/.test(part)) {
-      const [aRaw, bRaw] = part.split("-").map((x) => Number(x.trim()));
-      const a = Math.min(aRaw, bRaw) - 1;
-      const b = Math.max(aRaw, bRaw) - 1;
-      if (a < 0 || b >= pageCount) throw new PdfEngineError("PAGE_RANGE", "One or more page ranges are outside the PDF.");
-      for (let i = a; i <= b; i++) result.push(i);
-    } else {
-      throw new PdfEngineError("PAGE_RANGE", `Invalid page selection: ${part}`);
-    }
-  }
-  return [...new Set(result)];
-}
-
 function hexColor(value = "#ef4444") {
   const match = /^#?([0-9a-f]{6})$/i.exec(value.trim());
   if (!match) return rgb(0.94, 0.27, 0.27);
@@ -462,7 +441,10 @@ async function fillForm(file: File, options: PdfProcessOptions, mode: "text" | "
   const pdf = await loadPdf(file);
   const form = pdf.getForm();
   const fields = form.getFields();
-  if (!fields.length) throw new PdfEngineError("UNSUPPORTED", "This PDF does not contain standard AcroForm fields. XFA forms are not supported.");
+  if (!fields.length) {
+    if (flatten) return savePdf(pdf, `${file.name.replace(/\.pdf$/i, "")}-flattened.pdf`);
+    throw new PdfEngineError("UNSUPPORTED", "This PDF does not contain standard AcroForm fields. XFA forms are not supported.");
+  }
   const values = options.formValues ?? options.formFieldValues ?? {};
   for (const field of fields) {
     const name = field.getName();
