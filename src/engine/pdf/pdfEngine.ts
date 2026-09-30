@@ -550,7 +550,7 @@ export async function processPdf(
 
     // Standard PDF fonts use WinAnsi. For non-WinAnsi text, render through the
     // browser's Unicode-capable canvas so Hindi/Arabic/CJK text does not crash.
-    if (/[^ -ÿ]/.test(text)) {
+    if (/[^\u0000-\u00FF]/.test(text)) {
       assertBrowser();
       const canvas = document.createElement("canvas");
       canvas.width = 1240;
@@ -565,30 +565,31 @@ export async function processPdf(
       const lineHeight = 36;
       const maxWidth = canvas.width - margin * 2;
       const wrapped: string[] = [];
-      for (const rawLine of text.replace(/
-/g, "
-").split("
-")) {
+      for (const rawLine of text.replace(/\r\n/g, "\n").split("\n")) {
         let current = "";
         for (const char of rawLine) {
           const candidate = current + char;
           if (ctx.measureText(candidate).width > maxWidth && current) {
             wrapped.push(current);
             current = char;
-          } else current = candidate;
+          } else {
+            current = candidate;
+          }
         }
         wrapped.push(current);
       }
       let y = margin;
-      const pages: Blob[] = [];
+      const pageBlobs: Blob[] = [];
       for (const line of wrapped) {
         assertNotAborted(signal);
         if (y > canvas.height - margin) {
           const pageBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
           if (!pageBlob) throw new PdfEngineError("UNSUPPORTED", "Could not encode text page.");
-          pages.push(pageBlob);
-          ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.fillStyle = "#111111"; ctx.font = "24px Arial, Noto Sans, sans-serif";
+          pageBlobs.push(pageBlob);
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = "#111111";
+          ctx.font = "24px Arial, Noto Sans, sans-serif";
           y = margin;
         }
         ctx.fillText(line, margin, y);
@@ -596,13 +597,13 @@ export async function processPdf(
       }
       const lastBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
       if (!lastBlob) throw new PdfEngineError("UNSUPPORTED", "Could not encode text page.");
-      pages.push(lastBlob);
-      for (let i = 0; i < pages.length; i++) {
-        const bytes = new Uint8Array(await pages[i].arrayBuffer());
+      pageBlobs.push(lastBlob);
+      for (let i = 0; i < pageBlobs.length; i++) {
+        const bytes = new Uint8Array(await pageBlobs[i].arrayBuffer());
         const image = await pdf.embedPng(bytes);
         const page = pdf.addPage([595.28, 841.89]);
         page.drawImage(image, { x: 0, y: 0, width: 595.28, height: 841.89 });
-        report((i + 1) / pages.length, `Created Unicode page ${i + 1} of ${pages.length}`, onProgress);
+        report((i + 1) / pageBlobs.length, \`Created Unicode page \${i + 1} of \${pageBlobs.length}\`, onProgress);
       }
       return savePdf(pdf, "text-to-pdf.pdf", signal);
     }
