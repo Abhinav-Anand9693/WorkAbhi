@@ -550,7 +550,7 @@ export async function processPdf(
 
     // Standard PDF fonts use WinAnsi. For non-WinAnsi text, render through the
     // browser's Unicode-capable canvas so Hindi/Arabic/CJK text does not crash.
-    if (/[^\\u0000-\\u00FF]/.test(text)) {
+    if (/[^ -ÿ]/.test(text)) {
       assertBrowser();
       const canvas = document.createElement("canvas");
       canvas.width = 1240;
@@ -565,7 +565,10 @@ export async function processPdf(
       const lineHeight = 36;
       const maxWidth = canvas.width - margin * 2;
       const wrapped: string[] = [];
-      for (const rawLine of text.replace(/\\r\\n/g, "\\n").split("\\n")) {
+      for (const rawLine of text.replace(/
+/g, "
+").split("
+")) {
         let current = "";
         for (const char of rawLine) {
           const candidate = current + char;
