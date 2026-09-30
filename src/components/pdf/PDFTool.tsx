@@ -205,7 +205,11 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
 
       if (id === "split-pdf" && splitGroupsInput.trim()) processOptions.pageGroups = parseGroups(splitGroupsInput, pages.length);
       else if (pageOrderInput.trim() && (id === "reorder-pdf-pages" || id === "pdf-page-organizer")) processOptions.pageOrder = parsePages(pageOrderInput, pages.length);
-      else if (pageInput.trim()) processOptions.pages = parsePages(pageInput, pages.length);
+      else if (pageInput.trim()) {
+        const parsed = parsePages(pageInput, pages.length);
+        if (IMAGE_OUTPUT_IDS.has(id)) processOptions.pageIndices = parsed;
+        else processOptions.pages = parsed;
+      }
       else if (pageTool && selected.length) processOptions.pages = selected;
 
       if (DESTRUCTIVE.has(id) && !processOptions.pages?.length && !processOptions.pageOrder?.length && id !== "split-pdf") {
@@ -293,7 +297,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
       {showPageOrder&&<label className="block text-sm">Complete page order<input className="mt-2 w-full rounded-xl border p-3" placeholder="Example: 3,1,2,4" value={pageOrderInput} onChange={(e)=>setPageOrderInput(e.target.value)}/></label>}
       {id==="duplicate-pdf-pages"&&<label className="block text-sm">Duplicate insertion position<input className="mt-2 w-full rounded-xl border p-3" type="number" min={1} max={Math.max(1,pages.length+1)} value={Number(options.duplicatePosition ?? ((selected[0]??0)+2))} onChange={(e)=>setOption("duplicatePosition",Math.max(0,Number(e.target.value)-1))}/></label>}
 
-      {id==="rotate-pdf"&&<label className="block text-sm">Rotation<select className="mt-2 rounded-xl border p-3" value={options.rotate??90} onChange={(e)=>setOption("rotate",Number(e.target.value) as 90|180|270)}><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>}
+      {id==="pdf-page-numbering"&&<div className="grid gap-3 sm:grid-cols-2"><label className="text-sm">Starting number<input className="mt-1 w-full rounded-xl border p-3" type="number" min={0} value={options.pageNumberStart??1} onChange={(e)=>setOption("pageNumberStart",Number(e.target.value))}/></label><label className="text-sm">Position<select className="mt-1 w-full rounded-xl border p-3" value={options.pageNumberPosition??"bottom-center"} onChange={(e)=>setOption("pageNumberPosition",e.target.value as PdfProcessOptions["pageNumberPosition"])}>{["top-left","top-center","top-right","bottom-left","bottom-center","bottom-right"].map((p)=><option key={p} value={p}>{p}</option>)}</select></label></div>}\n\n{id==="rotate-pdf"&&<label className="block text-sm">Rotation<select className="mt-2 rounded-xl border p-3" value={options.rotate??90} onChange={(e)=>setOption("rotate",Number(e.target.value) as 90|180|270)}><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></label>}
 
       {["pdf-watermark","pdf-stamp","add-text-to-pdf","pdf-annotation-tool"].includes(id)&&<div className="grid gap-3 sm:grid-cols-2"><input className="rounded-xl border p-3" placeholder="Text" value={textValue} onChange={(e)=>setTextValue(e.target.value)}/><input className="rounded-xl border p-3" type="number" min="6" max="96" value={options.fontSize??18} onChange={(e)=>setOption("fontSize",Number(e.target.value))}/></div>}
 
