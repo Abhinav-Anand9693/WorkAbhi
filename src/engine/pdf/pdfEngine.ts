@@ -232,10 +232,9 @@ function clearMetadata(pdf: PDFDocument) {
   pdf.setKeywords([]);
   pdf.setCreator("");
   pdf.setProducer("");
-  // pdf-lib exposes setters but no public "clear date" API.
-  // Normalize these dates instead of pretending they can be removed safely.
-  pdf.setCreationDate(new Date(0));
-  pdf.setModificationDate(new Date(0));
+  // Remove the document information dictionary itself so dates are not replaced
+  // with a fake epoch value. This uses pdf-lib's exposed PDFContext trailer info.
+  pdf.context.trailerInfo.Info = undefined;
 }
 
 function drawPageNumbers(pdf: PDFDocument, start: number, position: PdfProcessOptions["pageNumberPosition"], color: ReturnType<typeof rgb>, indices?: number[]) {
@@ -548,6 +547,63 @@ export async function processPdf(
     const text = options.text ?? "";
     if (!text.trim()) throw new PdfEngineError("INVALID_OPTIONS", "Enter some text before creating the PDF.");
     const pdf = await PDFDocument.create();
+
+    // Standard PDF fonts use WinAnsi. For non-WinAnsi text, render through the
+    // browser's Unicode-capable canvas so Hindi/Arabic/CJK text does not crash.
+    if (/[^\\u0000-\\u00FF]/.test(text)) {
+      assertBrowser();
+      const canvas = document.createElement("canvas");
+      canvas.width = 1240;
+      canvas.height = 1754;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new PdfEngineError("BROWSER_UNSUPPORTED", "Canvas is unavailable.");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#111111";
+      ctx.font = "24px Arial, Noto Sans, sans-serif";
+      const margin = 90;
+      const lineHeight = 36;
+      const maxWidth = canvas.width - margin * 2;
+      const wrapped: string[] = [];
+      for (const rawLine of text.replace(/\\r\\n/g, "\\n").split("\\n")) {
+        let current = "";
+        for (const char of rawLine) {
+          const candidate = current + char;
+          if (ctx.measureText(candidate).width > maxWidth && current) {
+            wrapped.push(current);
+            current = char;
+          } else current = candidate;
+        }
+        wrapped.push(current);
+      }
+      let y = margin;
+      const pages: Blob[] = [];
+      for (const line of wrapped) {
+        assertNotAborted(signal);
+        if (y > canvas.height - margin) {
+          const pageBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+          if (!pageBlob) throw new PdfEngineError("UNSUPPORTED", "Could not encode text page.");
+          pages.push(pageBlob);
+          ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = "#111111"; ctx.font = "24px Arial, Noto Sans, sans-serif";
+          y = margin;
+        }
+        ctx.fillText(line, margin, y);
+        y += lineHeight;
+      }
+      const lastBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!lastBlob) throw new PdfEngineError("UNSUPPORTED", "Could not encode text page.");
+      pages.push(lastBlob);
+      for (let i = 0; i < pages.length; i++) {
+        const bytes = new Uint8Array(await pages[i].arrayBuffer());
+        const image = await pdf.embedPng(bytes);
+        const page = pdf.addPage([595.28, 841.89]);
+        page.drawImage(image, { x: 0, y: 0, width: 595.28, height: 841.89 });
+        report((i + 1) / pages.length, `Created Unicode page ${i + 1} of ${pages.length}`, onProgress);
+      }
+      return savePdf(pdf, "text-to-pdf.pdf", signal);
+    }
+
     const font = pdf.embedStandardFont(StandardFonts.Helvetica);
     const lines = text.replace(/\r\n/g, "\n").split("\n");
     const pageWidth = 595.28;
