@@ -492,7 +492,7 @@ async function pdfToImages(
 ): Promise<PdfOutput> {
   assertBrowser();
   const scale = Math.max(0.25, Math.min(2, options.renderScale ?? 1));
-  const indices = options.pageIndices?.length ? options.pageIndices : Array.from({ length: Math.min(MAX_PAGES, 50) }, (_, i) => i);
+  const requestedIndices = options.pageIndices?.length ? [...new Set(options.pageIndices)] : undefined;
   const pdfBytes = new Uint8Array(await file.arrayBuffer());
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
   pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
@@ -500,7 +500,9 @@ async function pdfToImages(
   const outputImages: PdfOutput["images"] = [];
   try {
     const pageCount = doc.numPages;
-    const selected = indices.filter((i) => i >= 0 && i < pageCount);
+    if (pageCount > MAX_PAGES) throw new PdfEngineError("MEMORY_RISK", `This PDF has ${pageCount} pages. Browser rendering is limited to ${MAX_PAGES} pages.`);
+    if (!requestedIndices && pageCount > 50) throw new PdfEngineError("MEMORY_RISK", "This PDF has more than 50 pages. Enter a page range before converting to images to avoid excessive browser memory use.");
+    const selected = (requestedIndices ?? Array.from({ length: pageCount }, (_, i) => i)).filter((i) => i >= 0 && i < pageCount);
     if (!selected.length) throw new PdfEngineError("PAGE_RANGE", "No valid PDF pages were selected.");
     for (let n = 0; n < selected.length; n++) {
       assertNotAborted(signal);
