@@ -25,6 +25,8 @@
     "marked": "^18.0.12",
     "mediabunny": "^1.56.3",
     "next": "latest",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.3.289",
     "prettier": "^3.9.6",
     "qrcode": "^1.5.4",
     "react": "latest",

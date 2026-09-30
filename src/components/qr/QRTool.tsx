@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Image from "next/image";
 import {
   createBitcoinQR,
   createCalendarQR,
@@ -22,6 +23,7 @@ import {
   generateBarcode,
   type BarcodeFormat,
 } from "@/engine/qr/barcodeEngine";
+import next from "next";
 
 interface QRToolProps {
   toolId: string;
@@ -515,11 +517,14 @@ export default function QRTool({
           </h3>
 
           <div className="mx-auto mt-5 flex max-w-md items-center justify-center rounded-xl border bg-white p-5">
-            <img
-              src={resultUrl}
-              alt="Generated QR code or barcode"
-              className="max-h-[420px] w-auto object-contain"
-            />
+            <Image
+  src={resultUrl}
+  alt="Generated QR code or barcode"
+  width={600}
+  height={600}
+  unoptimized
+  className="max-h-[420px] w-auto object-contain"
+/>
           </div>
 
           <div className="mt-5 flex flex-col justify-center gap-3 sm:flex-row">

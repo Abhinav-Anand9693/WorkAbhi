@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useMemo, useState, useRef } from "react";
 
 import ImageUploader from "./ImageUploader";
@@ -617,20 +618,20 @@ const abortControllerRef =
    * is finally unmounted.
    */
   useEffect(() => {
-    return () => {
-      if (originalPreview) {
-        URL.revokeObjectURL(
-          originalPreview
-        );
-      }
+  return () => {
+    if (originalPreview) {
+      URL.revokeObjectURL(
+        originalPreview
+      );
+    }
 
-      if (resultPreview) {
-        URL.revokeObjectURL(
-          resultPreview
-        );
-      }
-    };
-  }, []);
+    if (resultPreview) {
+      URL.revokeObjectURL(
+        resultPreview
+      );
+    }
+  };
+}, [originalPreview, resultPreview]);
 
   /**
    * Tool not found.
@@ -2181,16 +2182,17 @@ const abortControllerRef =
             </p>
 
             <div className="overflow-hidden rounded-xl border bg-muted/10">
-              <img
+                            <Image
                 src={originalPreview}
                 alt="Color picker image"
-                onClick={
-                  handlePreviewClick
-                }
+                width={1600}
+                height={1200}
+                unoptimized
+                onClick={handlePreviewClick}
                 draggable={false}
                 className="block max-h-[650px] w-full cursor-crosshair object-contain"
               />
-            </div>
+                          </div>
 
             {pickedColor && (
               <div className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-center">

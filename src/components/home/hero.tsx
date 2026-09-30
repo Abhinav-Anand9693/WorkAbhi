@@ -115,7 +115,7 @@ export default function Hero() {
             <p className="motion-safe:animate-[heroFadeUp_0.7s_0.16s_ease-out_both] mx-auto mt-7 max-w-xl text-base leading-7 text-slate-600 sm:text-lg sm:leading-8 lg:mx-0">
               Powerful tools that work directly in your
               browser — without making your files travel
-              somewhere they don't need to.
+              somewhere they don&apos;t need to.
             </p>
 
             {/* Privacy Card */}
@@ -130,14 +130,14 @@ export default function Hero() {
 
                 <div>
                   <p className="text-sm font-semibold leading-6 text-slate-900 sm:text-[15px]">
-                    You don't need to trust us—we don't
+                    You don&apos;t need to trust us—we don&apos;t
                     receive the document.
                   </p>
 
                   <p className="mt-1 text-xs leading-5 text-slate-500 sm:text-sm">
                     For supported client-side tools, your
                     files are processed locally in your
-                    browser and don't need to be uploaded
+                    browser and don&apos;t need to be uploaded
                     to our servers.
                   </p>
                 </div>

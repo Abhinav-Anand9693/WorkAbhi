@@ -5,6 +5,8 @@ import {
   useMemo,
 } from "react";
 
+import Image from "next/image";
+
 interface SplitResultsProps {
   files: Blob[];
   onDownload: (
@@ -82,11 +84,14 @@ export default function SplitResults({
               key={`${blob.size}-${index}`}
               className="overflow-hidden rounded-xl border"
             >
-              <img
-                src={urls[index]}
-                alt={`Split image ${index + 1}`}
-                className="aspect-square w-full bg-muted/20 object-contain"
-              />
+              <Image
+  src={urls[index]}
+  alt={`Split image ${index + 1}`}
+  width={800}
+  height={800}
+  unoptimized
+  className="aspect-square w-full bg-muted/20 object-contain"
+/>
 
               <div className="p-3">
                 <button

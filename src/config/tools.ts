@@ -573,6 +573,74 @@ function DataTool(
   };
 }
 
+   function pdfTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "pdf",
+    description,
+    icon: "FileText",
+    type: "pdf",
+    engine: "pdf",
+    available: true,
+    popular,
+
+    seo: {
+      title: `${name} - Free Online PDF Tool | WorkAbhi`,
+
+      description:
+        `${description} Use WorkAbhi's free browser-based PDF tool.`,
+
+      keywords: [
+        name.toLowerCase(),
+        "pdf tool",
+        "free pdf tool",
+        "online pdf tool",
+        "pdf editor",
+        "WorkAbhi",
+      ],
+
+      intro:
+        `${description} WorkAbhi processes supported PDF operations directly in your browser.`,
+
+      howToUse: [
+        `Open the ${name}.`,
+        "Select your PDF file.",
+        "Configure the available options.",
+        "Process the PDF.",
+        "Preview the result when available.",
+        "Download the processed PDF.",
+      ],
+
+      faq: [
+        {
+          question: `Is ${name} free?`,
+          answer:
+            "Yes. WorkAbhi provides this PDF tool for free.",
+        },
+        {
+          question:
+            "Are my PDF files uploaded to a server?",
+          answer:
+            "The PDF tools are designed for browser-side processing whenever technically possible.",
+        },
+        {
+          question:
+            "Do I need an account to use this PDF tool?",
+          answer:
+            "No. The tool is designed to work without requiring an account.",
+        },
+      ],
+    },
+  };
+}
+
+
 /* ==========================================
    ALL WORKABHI TOOLS
 ========================================== */
@@ -2100,8 +2168,284 @@ DataTool(
   "View basic file information such as name, type, size, extension and modified date.",
   false
 ),
-];
 
+
+  /* =========================================================
+     PDF TOOLS
+  ========================================================= */
+
+  pdfTool(
+    "merge-pdf",
+    "Merge PDF",
+    "Merge multiple PDF files into a single PDF.",
+    true
+  ),
+
+  pdfTool(
+    "split-pdf",
+    "Split PDF",
+    "Split a PDF into selected page ranges."
+  ),
+
+  pdfTool(
+    "rotate-pdf",
+    "Rotate PDF",
+    "Rotate PDF pages by 90, 180 or 270 degrees."
+  ),
+
+  pdfTool(
+    "delete-pdf-pages",
+    "Delete PDF Pages",
+    "Remove selected pages from a PDF."
+  ),
+
+  pdfTool(
+    "extract-pdf-pages",
+    "Extract PDF Pages",
+    "Extract selected pages from a PDF into a new PDF."
+  ),
+
+  pdfTool(
+    "reorder-pdf-pages",
+    "Reorder PDF Pages",
+    "Change the order of pages inside a PDF."
+  ),
+
+  pdfTool(
+    "duplicate-pdf-pages",
+    "Duplicate PDF Pages",
+    "Duplicate selected PDF pages."
+  ),
+
+  pdfTool(
+    "reverse-pdf-pages",
+    "Reverse PDF Pages",
+    "Reverse the page order of a PDF."
+  ),
+
+  pdfTool(
+    "pdf-page-numbering",
+    "PDF Page Numbering",
+    "Add page numbers to PDF pages."
+  ),
+
+  pdfTool(
+    "pdf-page-organizer",
+    "PDF Page Organizer",
+    "Organize and manage PDF pages."
+  ),
+
+  pdfTool(
+    "pdf-viewer",
+    "PDF Viewer",
+    "View PDF files directly in your browser.",
+    true
+  ),
+
+  pdfTool(
+    "pdf-metadata-viewer",
+    "PDF Metadata Viewer",
+    "View PDF metadata and document information."
+  ),
+
+  pdfTool(
+    "remove-pdf-metadata",
+    "Remove PDF Metadata",
+    "Remove metadata from a PDF document."
+  ),
+
+  pdfTool(
+    "pdf-watermark",
+    "PDF Watermark",
+    "Add a watermark to PDF pages."
+  ),
+
+  pdfTool(
+    "pdf-stamp",
+    "PDF Stamp",
+    "Add a visual stamp to PDF pages."
+  ),
+
+  pdfTool(
+    "add-text-to-pdf",
+    "Add Text to PDF",
+    "Add custom text to PDF pages."
+  ),
+
+  pdfTool(
+    "add-image-to-pdf",
+    "Add Image to PDF",
+    "Add images to PDF pages."
+  ),
+
+  pdfTool(
+    "add-signature-to-pdf",
+    "Add Signature to PDF",
+    "Add a signature image to a PDF."
+  ),
+
+  pdfTool(
+    "pdf-highlight-tool",
+    "PDF Highlight Tool",
+    "Highlight selected areas of PDF pages."
+  ),
+
+  pdfTool(
+    "pdf-drawing-tool",
+    "PDF Drawing Tool",
+    "Draw directly over PDF pages."
+  ),
+
+  pdfTool(
+    "pdf-annotation-tool",
+    "PDF Annotation Tool",
+    "Add visual annotations to PDF pages."
+  ),
+
+  pdfTool(
+    "pdf-whiteout-tool",
+    "PDF Whiteout Tool",
+    "Cover selected PDF content with a white overlay."
+  ),
+
+  pdfTool(
+    "pdf-form-filler",
+    "PDF Form Filler",
+    "Fill supported PDF form fields."
+  ),
+
+  pdfTool(
+    "pdf-checkbox-filler",
+    "PDF Checkbox Filler",
+    "Fill supported PDF checkbox fields."
+  ),
+
+  pdfTool(
+    "pdf-radio-button-filler",
+    "PDF Radio Button Filler",
+    "Fill supported PDF radio button fields."
+  ),
+
+  pdfTool(
+    "pdf-flatten-tool",
+    "PDF Flatten Tool",
+    "Flatten supported PDF form content."
+  ),
+
+  pdfTool(
+    "jpg-to-pdf",
+    "JPG to PDF",
+    "Convert JPG and JPEG images into PDF files.",
+    true
+  ),
+
+  pdfTool(
+    "png-to-pdf",
+    "PNG to PDF",
+    "Convert PNG images into PDF files.",
+    true
+  ),
+
+  pdfTool(
+    "webp-to-pdf",
+    "WEBP to PDF",
+    "Convert WEBP images into PDF files."
+  ),
+
+  pdfTool(
+    "bmp-to-pdf",
+    "BMP to PDF",
+    "Convert BMP images into PDF files."
+  ),
+
+  pdfTool(
+    "tiff-to-pdf",
+    "TIFF to PDF",
+    "Convert supported TIFF images into PDF files."
+  ),
+
+  pdfTool(
+    "images-to-pdf",
+    "Images to PDF",
+    "Convert multiple images into a single PDF.",
+    true
+  ),
+
+  pdfTool(
+    "text-to-pdf",
+    "Text to PDF",
+    "Convert text content into a PDF document."
+  ),
+
+  pdfTool(
+    "pdf-to-jpg",
+    "PDF to JPG",
+    "Convert PDF pages into JPG images.",
+    true
+  ),
+
+  pdfTool(
+    "pdf-to-png",
+    "PDF to PNG",
+    "Convert PDF pages into PNG images.",
+    true
+  ),
+
+  pdfTool(
+    "pdf-to-webp",
+    "PDF to WEBP",
+    "Convert PDF pages into WEBP images."
+  ),
+
+  pdfTool(
+    "pdf-to-images",
+    "PDF to Images",
+    "Convert PDF pages into image files."
+  ),
+
+  pdfTool(
+    "pdf-pages-to-images",
+    "PDF Pages to Images",
+    "Convert selected PDF pages into images."
+  ),
+
+  pdfTool(
+    "pdf-password-generator",
+    "PDF Password Generator",
+    "Generate a secure password for PDF protection workflows."
+  ),
+
+  pdfTool(
+    "pdf-hash-generator",
+    "PDF Hash Generator",
+    "Generate cryptographic hashes for PDF files."
+  ),
+
+  pdfTool(
+    "pdf-file-integrity-checker",
+    "PDF File Integrity Checker",
+    "Check whether a PDF can be parsed successfully."
+  ),
+
+  pdfTool(
+    "pdf-metadata-cleaner",
+    "PDF Metadata Cleaner",
+    "Clean metadata from a PDF document."
+  ),
+
+  pdfTool(
+    "pdf-privacy-cleaner",
+    "PDF Privacy Cleaner",
+    "Remove supported document metadata and privacy-related information."
+  ),
+
+  pdfTool(
+    "pdf-security-checker",
+    "PDF Security Checker",
+    "Inspect supported PDF security and document properties."
+  ),
+
+];
 /* ==========================================
    TOOL LOOKUP
 ========================================== */

@@ -1,4 +1,5 @@
 "use client";
+import Image from "next/image";
 
 interface ImagePreviewProps {
   originalPreview?: string | null;
@@ -102,11 +103,14 @@ export default function ImagePreview({
 
           <div className="flex min-h-[280px] items-center justify-center bg-muted/10 p-4">
             {originalPreview ? (
-              <img
-                src={originalPreview}
-                alt="Original image"
-                className="max-h-[500px] max-w-full object-contain"
-              />
+                        <Image
+              src={originalPreview}
+              alt="Original image"
+              width={1200}
+              height={900}
+              unoptimized
+              className="max-h-[500px] max-w-full object-contain"
+            />
             ) : (
               <span className="text-sm text-muted-foreground">
                 No image
@@ -138,9 +142,12 @@ export default function ImagePreview({
                 Processing image...
               </div>
             ) : resultPreview ? (
-              <img
+                            <Image
                 src={resultPreview}
                 alt="Processed image"
+                width={1200}
+                height={900}
+                unoptimized
                 className="max-h-[500px] max-w-full object-contain"
               />
             ) : (
