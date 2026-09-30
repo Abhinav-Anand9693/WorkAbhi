@@ -54,6 +54,9 @@ export interface PdfProcessOptions {
   rotate?: 0 | 90 | 180 | 270;
   pageOrder?: number[];
   duplicatePage?: number;
+  duplicatePosition?: number;
+  pageGroups?: number[][];
+  formFieldValues?: Record<string, string | boolean>;
   text?: string;
   watermarkText?: string;
   stampText?: string;
@@ -100,6 +103,7 @@ export interface PdfOutput {
   text?: string;
   metadata?: Record<string, unknown>;
   images?: Array<{ blob: Blob; filename: string; pageIndex: number }>;
+  outputs?: PdfOutput[];
 }
 
 export interface PdfProgress {
