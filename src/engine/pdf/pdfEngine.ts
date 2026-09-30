@@ -285,7 +285,6 @@ async function annotatePdf(
   onProgress?: (p: PdfProgress) => void,
 ): Promise<PdfOutput> {
   const pdf = await loadPdf(file);
-  const pages = pdf.getPages();
   const selected = options.pages?.length ? [...new Set(options.pages)] : [];
   if (!selected.length) throw new PdfEngineError("INVALID_OPTIONS", "Select at least one page for this operation.");
   const color = hexColor(options.color);
@@ -332,9 +331,6 @@ async function annotatePdf(
     } else if (toolId === "pdf-annotation-tool") {
       page.drawRectangle({ x: point.x, y: point.y, width: 180, height: 60, borderColor: color, borderWidth: 1, color: rgb(1, 1, 0.8), opacity: 0.85 });
       page.drawText(options.text || "Annotation", { x: point.x + 8, y: point.y + 40, size: Math.min(size, 14), font, color });
-    } else if (toolId === "pdf-page-numbering") {
-      drawPageNumbers(pdf, options.pageNumberStart ?? 1, options.pageNumberPosition ?? "bottom-center", color);
-      break;
     } else if (toolId === "add-image-to-pdf") {
       if (!options.imageBytes) {
         throw new PdfEngineError(
@@ -610,7 +606,10 @@ export async function processPdf(
   if (toolId === "pdf-hash-generator") {
     const file = files[0];
     ensurePdfFile(file);
-    assertNotAborted(signal);\n    const data = await file.arrayBuffer();\n    assertNotAborted(signal);\n    const algorithm = options.hashAlgorithm ?? "SHA-256";
+    assertNotAborted(signal);
+    const data = await file.arrayBuffer();
+    assertNotAborted(signal);
+    const algorithm = options.hashAlgorithm ?? "SHA-256";
     const digest = await crypto.subtle.digest(algorithm, data);
     const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
     return { text: `${algorithm}: ${hex}` };
@@ -681,12 +680,12 @@ export async function processPdf(
     const out = await PDFDocument.create();
     for (let i = 0; i < files.length; i++) {
       assertNotAborted(signal);
-      const source = await loadPdf(files[i]);
+      const source = await loadPdf(files[i], signal);
       const copied = await out.copyPages(source, source.getPageIndices());
       copied.forEach((p) => out.addPage(p));
       report((i + 1) / files.length, `Merged ${i + 1} of ${files.length} PDFs`, onProgress);
     }
-    return savePdf(out, "merged.pdf");
+    return savePdf(out, "merged.pdf", signal);
   }
 
   const pdf = await loadPdf(files[0]);
@@ -694,7 +693,7 @@ export async function processPdf(
 
   if (toolId === "remove-pdf-metadata" || toolId === "pdf-metadata-cleaner" || toolId === "pdf-privacy-cleaner") {
     clearMetadata(pdf);
-    return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-clean.pdf`);
+    return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-clean.pdf`, signal);
   }
 
   if (toolId === "pdf-form-filler") return fillForm(files[0], options, "text");
@@ -706,7 +705,7 @@ export async function processPdf(
     const targetPages = options.pages?.length ? [...new Set(options.pages)] : pdf.getPageIndices();
     if (targetPages.some((i) => i < 0 || i >= pdf.getPageCount())) throw new PdfEngineError("PAGE_RANGE", "One or more page numbers are outside the PDF.");
     drawPageNumbers(pdf, options.pageNumberStart ?? 1, options.pageNumberPosition ?? "bottom-center", hexColor(options.color), targetPages);
-    return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-numbered.pdf`);
+    return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-numbered.pdf`, signal);
   }
 
   if (["rotate-pdf", "delete-pdf-pages", "extract-pdf-pages", "reorder-pdf-pages", "duplicate-pdf-pages", "reverse-pdf-pages", "split-pdf", "pdf-page-organizer"].includes(toolId)) {
