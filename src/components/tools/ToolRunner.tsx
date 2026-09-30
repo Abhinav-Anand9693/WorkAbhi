@@ -10,7 +10,7 @@ import TextTool from "../text/TextTool";
 import AudioTool from "../audio/AudioTool";
 import VideoTool from "../video/VideoTool";
 import FileDataTool from "../data/DataTool";
-import PDFTool from "@/components/pdf/PDFTool";  
+import PDFTool from "@/components/pdf/PDFTool"; 
 
 interface ToolRunnerProps {
   tool: Tool;
