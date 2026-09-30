@@ -6,7 +6,7 @@ import type { PointerEvent } from "react";
 import type { PdfToolId, PdfProcessOptions, PdfOutput } from "@/engine/pdf/pdfTypes";
 import { PdfEngineError } from "@/engine/pdf/pdfTypes";
 import { processPdf, inspectPdf } from "@/engine/pdf/pdfEngine";
-import { renderPdfPage } from "@/engine/pdf/pdfRender";
+import { releasePdfDocument, renderPdfPage } from "@/engine/pdf/pdfRender";
 
 const PDF_TOOLS = new Set<PdfToolId>([
   "merge-pdf","split-pdf","rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages",
@@ -120,12 +120,13 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
   const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const thumbnailBusy = useRef(new Set<number>());
+  const thumbnailAbortRef = useRef(new AbortController());
 
   const needsPdf = !IMAGE_TO_PDF.has(id) && id !== "text-to-pdf" && id !== "pdf-password-generator";
   const needsImages = IMAGE_TO_PDF.has(id);
   const pageTool = PAGE_TOOLS.has(id);
 
-  useEffect(() => () => { abortRef.current?.abort(); }, []);
+  useEffect(() => () => { abortRef.current?.abort(); thumbnailAbortRef.current.abort(); if (files[0]) void releasePdfDocument(files[0]); }, [files]);
   useEffect(() => () => { if (viewerUrl) URL.revokeObjectURL(viewerUrl); }, [viewerUrl]);
   useEffect(() => () => { if (signaturePreview) URL.revokeObjectURL(signaturePreview); }, [signaturePreview]);
 
@@ -154,7 +155,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
     if (!files[0] || pageImages[index] || thumbnailBusy.current.has(index)) return;
     thumbnailBusy.current.add(index);
     try {
-      const dataUrl = await renderPdfPage(files[0], index, 0.42);
+      const dataUrl = await renderPdfPage(files[0], index, 0.42, thumbnailAbortRef.current.signal);
       setPageImages((current) => ({...current, [index]: dataUrl}));
     } catch { /* preview failure never blocks processing */ }
     finally { thumbnailBusy.current.delete(index); }
@@ -245,6 +246,9 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
 
   function reset() {
     abortRef.current?.abort();
+    thumbnailAbortRef.current.abort();
+    if (files[0]) void releasePdfDocument(files[0]);
+    thumbnailAbortRef.current = new AbortController();
     if (viewerUrl) URL.revokeObjectURL(viewerUrl);
     Object.values(pageImages).forEach((url)=>URL.revokeObjectURL(url));
     if (signaturePreview) URL.revokeObjectURL(signaturePreview);
