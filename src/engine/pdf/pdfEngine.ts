@@ -513,6 +513,34 @@ async function pdfToImages(
   return { images: outputImages };
 }
 
+
+async function inspectPdfSecurity(file: File): Promise<Record<string, unknown>> {
+  assertBrowser();
+  ensurePdfFile(file);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
+  const doc = await pdfjs.getDocument({ data: bytes }).promise;
+  try {
+    const [attachments, jsActions, signatures, permissions] = await Promise.all([
+      doc.getAttachments(),
+      doc.hasJSActions(),
+      doc.getSignatures(),
+      doc.getPermissions(),
+    ]);
+    return {
+      pages: doc.numPages,
+      hasJavaScript: jsActions,
+      attachmentNames: attachments ? Array.from(attachments.keys()) : [],
+      signatureCount: signatures?.length ?? 0,
+      permissions: permissions ? Array.from(permissions) : [],
+      xfaOnly: Boolean(doc.isPureXfa),
+    };
+  } finally {
+    await doc.cleanup();
+  }
+}
+
 export async function inspectPdf(file: File): Promise<Record<string, unknown>> {
   const pdf = await loadPdf(file);
   return {
@@ -680,6 +708,7 @@ export async function processPdf(
         bytes: file.size,
         headerLooksValid: head.startsWith("%PDF-"),
         eofMarkerPresent: tail.includes("%%EOF"),
+        startXrefMarkerPresent: tail.includes("startxref") || new TextDecoder().decode(bytes.slice(Math.max(0, bytes.length - 2048))).includes("startxref"),
         parserOpenedDocument: parsed,
         pageCount,
         verdict: parsed && head.startsWith("%PDF-") ? "Basic structural checks passed" : "The file failed one or more basic structural checks",
@@ -689,14 +718,19 @@ export async function processPdf(
 
   if (toolId === "pdf-security-checker") {
     const info = await inspectPdf(files[0]);
+    const parserSecurity = await inspectPdfSecurity(files[0]);
     return {
-      metadata: info,
+      metadata: { ...info, ...parserSecurity },
       text: JSON.stringify({
         encrypted: info.encrypted,
         standardAcroFormFields: info.hasForm,
         xfaForm: info.hasXFA,
+        javascriptActions: parserSecurity.hasJavaScript,
+        embeddedAttachments: parserSecurity.attachmentNames,
+        digitalSignatureCount: parserSecurity.signatureCount,
+        permissions: parserSecurity.permissions,
         metadataPresent: Boolean(info.title || info.author || info.subject || info.keywords || info.creator || info.producer),
-        note: "This checker reports only properties verifiable by the browser PDF parser. It does not claim to detect every possible PDF exploit, embedded object, or signature issue.",
+        note: "This is a parser-level security inspection. It detects several high-signal PDF features but is not an antivirus or exploit scanner.",
       }, null, 2),
     };
   }
