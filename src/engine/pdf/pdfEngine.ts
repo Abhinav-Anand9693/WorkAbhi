@@ -631,7 +631,7 @@ export async function processPdf(
         const image = await pdf.embedPng(bytes);
         const page = pdf.addPage([595.28, 841.89]);
         page.drawImage(image, { x: 0, y: 0, width: 595.28, height: 841.89 });
-        report((i + 1) / pageBlobs.length, \`Created Unicode page \${i + 1} of \${pageBlobs.length}\`, onProgress);
+        report((i + 1) / pageBlobs.length, `Created Unicode page ${i + 1} of ${pageBlobs.length}`, onProgress);
       }
       return savePdf(pdf, "text-to-pdf.pdf", signal);
     }
