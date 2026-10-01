@@ -46,17 +46,46 @@ function formatBytes(bytes: number) {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${unit}`;
 }
 
-function parsePages(value: string) {
+function parsePages(value: string, pageCount?: number) {
   const pages: number[] = [];
-  for (const token of value.split(",").map((x) => x.trim()).filter(Boolean)) {
-    if (/^\d+$/.test(token)) pages.push(Number(token) - 1);
-    else if (/^\d+-\d+$/.test(token)) {
-      const [a,b] = token.split("-").map(Number);
-      const start = Math.min(a,b), end = Math.max(a,b);
-      for (let n=start; n<=end; n++) pages.push(n-1);
+  const tokens = value.split(",").map((x) => x.trim());
+
+  if (!value.trim()) return pages;
+
+  for (const token of tokens) {
+    if (!token) throw new PdfEngineError("INVALID_OPTIONS", "Page selection contains an empty item.");
+
+    let start: number;
+    let end: number;
+
+    if (/^\d+$/.test(token)) {
+      start = end = Number(token);
+    } else if (/^\d+-\d+$/.test(token)) {
+      const [a, b] = token.split("-").map(Number);
+      start = Math.min(a, b);
+      end = Math.max(a, b);
+    } else {
+      throw new PdfEngineError(
+        "INVALID_OPTIONS",
+        `Invalid page selection \"${token}\". Use values like 1,3-5,8.`,
+      );
     }
+
+    if (start < 1 || end < 1 || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) {
+      throw new PdfEngineError("PAGE_RANGE", `Invalid page number in \"${token}\".`);
+    }
+
+    if (pageCount !== undefined && end > pageCount) {
+      throw new PdfEngineError(
+        "PAGE_RANGE",
+        `Page ${end} is outside this PDF. It contains ${pageCount} pages.`,
+      );
+    }
+
+    for (let n = start; n <= end; n++) pages.push(n - 1);
   }
-  return [...new Set(pages)];
+
+  return pages;
 }
 
 interface PDFToolProps { toolId: string; }
@@ -152,16 +181,25 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
       if (textValue) processOptions.text = textValue;
       if (passwordLength) processOptions.passwordLength = Number(passwordLength);
       if (pageInput) {
-        const parsed = parsePages(pageInput);
-        if (id === "reorder-pdf-pages" || id === "pdf-page-organizer") processOptions.pageOrder = parsed;
-        else processOptions.pages = parsed;
+        const parsed = parsePages(pageInput, pages.length || undefined);
+        if (id === "reorder-pdf-pages" || id === "pdf-page-organizer") {
+          if (parsed.length !== pages.length || new Set(parsed).size !== pages.length) {
+            throw new PdfEngineError(
+              "INVALID_OPTIONS",
+              `Reorder must contain every page exactly once (${pages.length} pages).`,
+            );
+          }
+          processOptions.pageOrder = parsed;
+        } else {
+          processOptions.pages = [...new Set(parsed)];
+        }
       } else if (pageTool && selected.length) {
         processOptions.pages = selected;
       }
       if (id === "duplicate-pdf-pages") {
         const duplicatePages = processOptions.pages?.length ? processOptions.pages : selected;
         if (!duplicatePages.length) throw new PdfEngineError("INVALID_OPTIONS", "Select at least one page to duplicate.");
-        processOptions.duplicatePages = duplicatePages;
+        processOptions.duplicatePages = [...new Set(duplicatePages)];
         processOptions.duplicateMode = duplicateMode;
       }
 
@@ -338,7 +376,16 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
               <option value="after">After original page</option><option value="before">Before original page</option>
             </select>
           </label>
+          <label className="block text-sm">Pages to duplicate
+            <input
+              className="mt-2 w-full rounded-xl border p-3"
+              placeholder="Optional: 1,3-5"
+              value={pageInput}
+              onChange={(e) => setPageInput(e.target.value)}
+            />
+          </label>
           {selected.length > 0 && <p className="text-xs text-muted-foreground">Selected: {selected.map((p) => p + 1).join(", ")}</p>}
+          <p className="text-xs text-muted-foreground">You can select multiple pages above or enter multiple page numbers/ranges here.</p>
         </div>
       )}
 
@@ -347,7 +394,10 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
           <h3 className="font-semibold">Page numbering settings</h3>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-sm">Start numbering at
-              <input className="mt-2 w-full rounded-xl border p-3" type="number" min={0} max={999999} value={options.pageNumberStart ?? 1} onChange={(e) => setOptions((o) => ({ ...o, pageNumberStart: Number(e.target.value) || 1 }))} />
+              <input className="mt-2 w-full rounded-xl border p-3" type="number" min={0} max={999999} value={options.pageNumberStart ?? 1} onChange={(e) => {
+                const value = Number(e.target.value);
+                setOptions((o) => ({ ...o, pageNumberStart: Number.isFinite(value) ? Math.max(0, Math.min(999999, value)) : 1 }));
+              }} />
             </label>
             <label className="text-sm">Position
               <select className="mt-2 w-full rounded-xl border p-3" value={options.pageNumberPosition ?? "bottom-center"} onChange={(e) => setOptions((o) => ({ ...o, pageNumberPosition: e.target.value as PdfProcessOptions["pageNumberPosition"] }))}>

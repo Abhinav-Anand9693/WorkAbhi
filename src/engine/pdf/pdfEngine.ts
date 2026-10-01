@@ -228,6 +228,12 @@ function metadata(pdf: PDFDocument) {
   };
 }
 
+async function embedHelvetica(pdf: PDFDocument) {
+  // pdf-lib embedFont is asynchronous. Keeping the await in one helper prevents
+  // future call sites from accidentally using the unresolved font promise.
+  return await pdf.embedFont(StandardFonts.Helvetica);
+}
+
 function clearMetadata(pdf: PDFDocument) {
   pdf.setTitle("");
   pdf.setAuthor("");
@@ -248,7 +254,7 @@ async function drawPageNumbers(
   color: ReturnType<typeof rgb>,
   pageIndices?: number[],
 ) {
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const font = await embedHelvetica(pdf);
   const indices = pageIndices?.length ? pageIndices : pdf.getPages().map((_, index) => index);
   indices.forEach((pageIndex, numberIndex) => {
     const page = pdf.getPages()[pageIndex];
@@ -277,7 +283,7 @@ async function annotatePdf(
   const pages = pdf.getPages();
   const selected = options.pages?.length ? options.pages : pages.map((_, index) => index);
   const color = hexColor(options.color);
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const font = await embedHelvetica(pdf);
   const size = Math.max(6, Math.min(96, options.fontSize ?? 18));
   const opacity = Math.max(0.05, Math.min(1, options.opacity ?? 0.35));
   const rotation = Number.isFinite(options.rotation) ? Number(options.rotation) : -35;
@@ -560,7 +566,7 @@ export async function processPdf(
     const text = options.text ?? "";
     if (!text.trim()) throw new PdfEngineError("INVALID_OPTIONS", "Enter some text before creating the PDF.");
     const pdf = await PDFDocument.create();
-    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const font = await embedHelvetica(pdf);
     const lines = text.replace(/\r\n/g, "\n").split("\n");
     const pageWidth = 595.28;
     const pageHeight = 841.89;
@@ -697,10 +703,22 @@ export async function processPdf(
       }
       indices = order;
     } else if (toolId === "duplicate-pdf-pages") {
-      const selectedPages = options.duplicatePages?.length ? [...new Set(options.duplicatePages)] : [options.duplicatePage ?? indices[0] ?? 0];
-      if (selectedPages.some((index) => index < 0 || index >= count)) {
+      const requestedPages = options.duplicatePages?.length
+        ? options.duplicatePages
+        : options.pages?.length
+          ? options.pages
+          : [options.duplicatePage ?? indices[0] ?? 0];
+      const selectedPages = [...new Set(requestedPages)];
+      if (!selectedPages.length) {
+        throw new PdfEngineError("INVALID_OPTIONS", "Select at least one page to duplicate.");
+      }
+      if (selectedPages.some((index) => !Number.isInteger(index) || index < 0 || index >= count)) {
         throw new PdfEngineError("PAGE_RANGE", "One or more duplicate pages are outside the PDF.");
       }
+
+      // Duplicate every requested page at its original position. The selected
+      // pages are tracked independently so selecting multiple pages can never
+      // collapse to only the first page.
       const selectedSet = new Set(selectedPages);
       const mode = options.duplicateMode ?? "after";
       const ordered: number[] = [];
