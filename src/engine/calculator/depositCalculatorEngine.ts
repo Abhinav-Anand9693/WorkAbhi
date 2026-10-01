@@ -48,21 +48,36 @@ export function calculateRD(
     months
   );
 
+  if (
+    !Number.isInteger(months) ||
+    months <= 0
+  ) {
+    throw new Error(
+      "RD tenure must be a whole number of months greater than zero."
+    );
+  }
+
+  // Estimate using monthly compounding with each deposit made at the
+  // beginning of its month. The convention is deterministic and avoids
+  // the earlier off-by-one ambiguity in the accumulation loop.
   const monthlyRate =
     annualRate / 12 / 100;
 
-  let maturity = 0;
+  const growth =
+    1 + monthlyRate;
+
+  let maturity =
+    0;
 
   for (
     let month = 0;
     month < months;
     month++
   ) {
-    maturity +=
-      monthlyDeposit;
-
-    maturity *=
-      1 + monthlyRate;
+    maturity =
+      (maturity +
+        monthlyDeposit) *
+      growth;
   }
 
   const invested =

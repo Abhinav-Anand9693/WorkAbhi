@@ -16,7 +16,7 @@ export function calculateSIP(
   );
 
   const months =
-    years * 12;
+    Math.round(years * 12);
 
   const monthlyRate =
     annualRate / 12 / 100;
@@ -27,14 +27,14 @@ export function calculateSIP(
     maturity =
       monthlyInvestment * months;
   } else {
+    // Standard end-of-month SIP convention.
     maturity =
       monthlyInvestment *
-      (((Math.pow(
+      ((Math.pow(
         1 + monthlyRate,
         months
       ) - 1) /
-        monthlyRate) *
-        (1 + monthlyRate));
+        monthlyRate);
   }
 
   const invested =
@@ -90,7 +90,7 @@ export function calculateSWP(
   let balance = principal;
 
   const months =
-    years * 12;
+    Math.round(years * 12);
 
   const monthlyRate =
     annualRate / 12 / 100;
@@ -105,11 +105,14 @@ export function calculateSWP(
     balance *=
       1 + monthlyRate;
 
-    balance -=
-      monthlyWithdrawal;
+    const withdrawal =
+      Math.min(
+        monthlyWithdrawal,
+        balance
+      );
 
-    totalWithdrawn +=
-      monthlyWithdrawal;
+    balance -= withdrawal;
+    totalWithdrawn += withdrawal;
 
     if (balance <= 0) {
       balance = 0;
@@ -135,11 +138,20 @@ export function calculatePPF(
     years
   );
 
+  const wholeYears =
+    Math.floor(years);
+
+  if (wholeYears <= 0) {
+    throw new Error(
+      "PPF investment period must be at least one full year."
+    );
+  }
+
   let balance = 0;
 
   for (
     let year = 0;
-    year < years;
+    year < wholeYears;
     year++
   ) {
     balance +=
@@ -151,10 +163,10 @@ export function calculatePPF(
 
   return {
     invested:
-      annualDeposit * years,
+      annualDeposit * wholeYears,
     interest:
       balance -
-      annualDeposit * years,
+      annualDeposit * wholeYears,
     maturity: balance
   };
 }

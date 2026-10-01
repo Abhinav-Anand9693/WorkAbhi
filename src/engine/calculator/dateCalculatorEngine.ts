@@ -124,29 +124,39 @@ export function calculateTimeDuration(
     duration += 24;
   }
 
+  // Convert once to whole minutes so the displayed result can never
+  // become an invalid value such as 9 hours 60 minutes.
+  const totalMinutes =
+    Math.round(duration * 60);
+
   return {
     hours: Math.floor(
-      duration
+      totalMinutes / 60
     ),
-    minutes: Math.round(
-      (duration -
-        Math.floor(duration)) *
-        60
-    ),
-    decimalHours: duration
+    minutes:
+      totalMinutes % 60,
+    decimalHours:
+      totalMinutes / 60
   };
 }
 
 function parseDate(
   value: string
 ): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new Error(
+      "Please enter a valid date."
+    );
+  }
+
   const date =
     new Date(`${value}T00:00:00`);
 
   if (
     Number.isNaN(
       date.getTime()
-    )
+    ) ||
+    date.toISOString().slice(0, 10) !== value
   ) {
     throw new Error(
       "Please enter a valid date."

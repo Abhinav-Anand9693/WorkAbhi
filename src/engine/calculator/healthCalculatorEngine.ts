@@ -47,12 +47,24 @@ export function calculateBMR(
   gender: "male" | "female"
 ) {
   if (
+    !Number.isFinite(weightKg) ||
+    !Number.isFinite(heightCm) ||
+    !Number.isFinite(age) ||
     weightKg <= 0 ||
     heightCm <= 0 ||
     age <= 0
   ) {
     throw new Error(
       "Please enter valid health values."
+    );
+  }
+
+  if (
+    gender !== "male" &&
+    gender !== "female"
+  ) {
+    throw new Error(
+      "Please select a valid gender."
     );
   }
 
@@ -65,6 +77,12 @@ export function calculateBMR(
     gender === "male"
       ? base + 5
       : base - 161;
+
+  if (!Number.isFinite(bmr) || bmr <= 0) {
+    throw new Error(
+      "Unable to calculate a valid BMR from the supplied values."
+    );
+  }
 
   return {
     bmr
@@ -98,10 +116,17 @@ export function calculateCalories(
     );
   }
 
+  const maintenanceCalories =
+    bmr * activityMultiplier;
+
+  if (!Number.isFinite(maintenanceCalories)) {
+    throw new Error(
+      "Unable to calculate valid maintenance calories."
+    );
+  }
+
   return {
     bmr,
-    maintenanceCalories:
-      bmr *
-      activityMultiplier
+    maintenanceCalories
   };
 }

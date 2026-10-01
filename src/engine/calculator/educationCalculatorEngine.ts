@@ -13,8 +13,17 @@ export function calculateGPA(
     );
   }
 
+  // The UI supplies total weighted grade points and total credits.
+  // GPA = sum(grade point × credit) / sum(credits).
+  if (gradePoints > 10 * credits) {
+    throw new Error(
+      "Total weighted grade points cannot exceed 10 times the total credits."
+    );
+  }
+
   return {
-    gpa: gradePoints
+    gpa:
+      gradePoints / credits
   };
 }
 
@@ -35,11 +44,13 @@ export function calculateCGPA(
 
   if (
     values.some(
-      (value) => value < 0
+      (value) =>
+        value < 0 ||
+        value > 10
     )
   ) {
     throw new Error(
-      "GPA cannot be negative."
+      "Each semester GPA must be between 0 and 10."
     );
   }
 

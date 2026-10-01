@@ -99,6 +99,12 @@ export function calculateDiscount(
     discount
   );
 
+  if (discount > 100) {
+    throw new Error(
+      "Discount percentage must be between 0 and 100."
+    );
+  }
+
   const discountAmount =
     (price * discount) / 100;
 
@@ -116,10 +122,11 @@ export function calculateProfitMargin(
   if (
     !Number.isFinite(cost) ||
     !Number.isFinite(selling) ||
-    cost <= 0
+    cost <= 0 ||
+    selling <= 0
   ) {
     throw new Error(
-      "Cost price must be greater than zero."
+      "Cost price and selling price must be greater than zero."
     );
   }
 
@@ -142,10 +149,11 @@ export function calculateProfitLoss(
   if (
     !Number.isFinite(cost) ||
     !Number.isFinite(selling) ||
-    cost <= 0
+    cost <= 0 ||
+    selling < 0
   ) {
     throw new Error(
-      "Cost price must be greater than zero."
+      "Cost price must be greater than zero and selling price cannot be negative."
     );
   }
 
