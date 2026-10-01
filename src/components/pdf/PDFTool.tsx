@@ -123,6 +123,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
   const thumbnailSessionRef = useRef<PdfRenderSession | null>(null);
   const viewerPageRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const viewerRenderedRef = useRef<Set<number>>(new Set());
+  const viewerPagesRef = useRef<Record<number, string>>({});
 
   const needsPdf = !["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf","text-to-pdf","pdf-password-generator"].includes(id);
   const needsImages = ["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf"].includes(id);
@@ -154,7 +155,21 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
         if (!Number.isInteger(index) || viewerRenderedRef.current.has(index)) continue;
         viewerRenderedRef.current.add(index);
         void session.renderPage(index, 1.05)
-          .then((dataUrl) => setViewerPages((current) => ({ ...current, [index]: dataUrl })))
+          .then((dataUrl) => {
+            viewerPagesRef.current[index] = dataUrl;
+            const renderedIndices = Object.keys(viewerPagesRef.current).map(Number);
+            if (renderedIndices.length > 10) {
+              renderedIndices
+                .sort((a, b) => Math.abs(a - index) - Math.abs(b - index))
+                .slice(10)
+                .forEach((staleIndex) => {
+                  delete viewerPagesRef.current[staleIndex];
+                  viewerRenderedRef.current.delete(staleIndex);
+                  session.releasePage(staleIndex, 1.05);
+                });
+            }
+            setViewerPages({ ...viewerPagesRef.current });
+          })
           .catch((e) => {
             viewerRenderedRef.current.delete(index);
             if (!viewerAbortRef.current?.signal.aborted) {
@@ -162,7 +177,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
             }
           });
       }
-    }, { rootMargin: "1000px 0px" });
+    }, { rootMargin: "600px 0px" });
 
     for (let index = 0; index < viewerPageCount; index++) {
       const element = viewerPageRefs.current[index];
@@ -258,6 +273,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
           viewerSessionRef.current = session;
           viewerRenderedRef.current = new Set();
           viewerPageRefs.current = {};
+          viewerPagesRef.current = {};
           setViewerUrl(URL.createObjectURL(output.blob));
           setViewerPages({});
           setViewerPageCount(await session.getPageCount());
@@ -305,6 +321,8 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
     thumbnailSessionRef.current = null;
     Object.values(pageImages).forEach((url) => URL.revokeObjectURL(url));
     setViewerUrl(null);
+    viewerPagesRef.current = {};
+    viewerRenderedRef.current = new Set();
     setViewerPages({});
     setViewerPageCount(0);
     setViewerBusy(false);

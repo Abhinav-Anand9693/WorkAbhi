@@ -817,8 +817,9 @@ export async function processPdf(
       if (selectedPages.some((index) => !Number.isInteger(index) || index < 0 || index >= count)) {
         throw new PdfEngineError("PAGE_RANGE", "One or more reverse pages are outside the PDF.");
       }
-      const selectedSet = new Set(selectedPages);
-      const reversed = [...selectedPages].reverse();
+      const orderedSelectedPages = [...new Set(selectedPages)].sort((a, b) => a - b);
+      const selectedSet = new Set(orderedSelectedPages);
+      const reversed = [...orderedSelectedPages].reverse();
       let cursor = 0;
       indices = Array.from({ length: count }, (_, index) => {
         if (!selectedSet.has(index)) return index;
