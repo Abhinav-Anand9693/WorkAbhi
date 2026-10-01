@@ -2159,20 +2159,6 @@ DataTool(
 ),
 
 DataTool(
-  "csv-to-json",
-  "CSV to JSON",
-  "Convert CSV data to JSON directly in your browser.",
-  true
-),
-
-DataTool(
-  "json-to-csv",
-  "JSON to CSV",
-  "Convert JSON data to CSV directly in your browser.",
-  true
-),
-
-DataTool(
   "csv-to-tsv",
   "CSV to TSV",
   "Convert CSV data to TSV format directly in your browser.",
