@@ -1,125 +1,436 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import type { PdfOutput, PdfProcessOptions, PdfToolId } from "@/engine/pdf/pdfTypes";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { PdfToolId, PdfProcessOptions, PdfOutput } from "@/engine/pdf/pdfTypes";
 import { PdfEngineError } from "@/engine/pdf/pdfTypes";
-import { inspectPdf, processPdf } from "@/engine/pdf/pdfEngine";
-import { releasePdfDocument, renderPdfPage } from "@/engine/pdf/pdfRender";
+import { processPdf, inspectPdf } from "@/engine/pdf/pdfEngine";
+import { renderPdfPage } from "@/engine/pdf/pdfRender";
 
-const IDS = new Set<PdfToolId>([
-  "merge-pdf","split-pdf","rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages","duplicate-pdf-pages","reverse-pdf-pages","pdf-page-numbering","pdf-page-organizer","pdf-viewer","pdf-metadata-viewer","remove-pdf-metadata","pdf-watermark","pdf-stamp","add-text-to-pdf","add-image-to-pdf","add-signature-to-pdf","pdf-highlight-tool","pdf-drawing-tool","pdf-annotation-tool","pdf-whiteout-tool","pdf-form-filler","pdf-checkbox-filler","pdf-radio-button-filler","pdf-flatten-tool","jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf","text-to-pdf","pdf-to-jpg","pdf-to-png","pdf-to-webp","pdf-to-images","pdf-pages-to-images","pdf-password-generator","pdf-hash-generator","pdf-file-integrity-checker","pdf-metadata-cleaner","pdf-privacy-cleaner","pdf-security-checker",
+const PDF_TOOLS = new Set<PdfToolId>([
+  "merge-pdf","split-pdf","rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages",
+  "duplicate-pdf-pages","reverse-pdf-pages","pdf-page-numbering","pdf-page-organizer","pdf-viewer",
+  "pdf-metadata-viewer","remove-pdf-metadata","pdf-watermark","pdf-stamp","add-text-to-pdf",
+  "add-image-to-pdf","add-signature-to-pdf","pdf-highlight-tool","pdf-drawing-tool","pdf-annotation-tool",
+  "pdf-whiteout-tool","pdf-form-filler","pdf-checkbox-filler","pdf-radio-button-filler","pdf-flatten-tool",
+  "jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf","text-to-pdf",
+  "pdf-to-jpg","pdf-to-png","pdf-to-webp","pdf-to-images","pdf-pages-to-images","pdf-password-generator",
+  "pdf-hash-generator","pdf-file-integrity-checker","pdf-metadata-cleaner","pdf-privacy-cleaner","pdf-security-checker"
 ]);
-const IMAGE_INPUT=new Set<PdfToolId>(["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf"]);
-const IMAGE_OUTPUT=new Set<PdfToolId>(["pdf-to-jpg","pdf-to-png","pdf-to-webp","pdf-to-images","pdf-pages-to-images"]);
-const PAGE_WORK=new Set<PdfToolId>(["split-pdf","rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages","duplicate-pdf-pages","reverse-pdf-pages","pdf-page-organizer","pdf-watermark","pdf-stamp","add-text-to-pdf","add-image-to-pdf","add-signature-to-pdf","pdf-highlight-tool","pdf-drawing-tool","pdf-annotation-tool","pdf-whiteout-tool"]);
-const FORM=new Set<PdfToolId>(["pdf-form-filler","pdf-checkbox-filler","pdf-radio-button-filler","pdf-flatten-tool"]);
 
-function bytes(n:number){if(!Number.isFinite(n))return "—";const u=["B","KB","MB","GB"];let x=n,i=0;while(x>=1024&&i<u.length-1){x/=1024;i++;}return `${x.toFixed(x>=100||i===0?0:1)} ${u[i]}`;}
-function parsePages(s:string,count:number){const out:number[]=[];for(const t of s.split(",").map(x=>x.trim()).filter(Boolean)){if(/^\d+$/.test(t)){const n=+t-1;if(n<0||n>=count)throw new Error(`Page ${+t} is outside the PDF.`);out.push(n);}else if(/^\d+\s*-\s*\d+$/.test(t)){const [a,b]=t.split("-").map(Number),lo=Math.min(a,b),hi=Math.max(a,b);if(lo<1||hi>count)throw new Error(`Page range ${t} is outside the PDF.`);for(let n=lo;n<=hi;n++)out.push(n-1);}else throw new Error(`Invalid page selection: ${t}`);}return [...new Set(out)];}
-function parseGroups(s:string,count:number){const g=s.split(";").map(x=>x.trim()).filter(Boolean).map(x=>parsePages(x,count));if(!g.length)throw new Error("Enter groups such as 1-3;4-6;7.");return g;}
-function download(blob:Blob,name:string){const u=URL.createObjectURL(blob),a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),30_000);}
+const PAGE_TOOLS = new Set<PdfToolId>([
+  "split-pdf","rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages","duplicate-pdf-pages",
+  "reverse-pdf-pages","pdf-page-numbering","pdf-page-organizer","pdf-watermark","pdf-stamp","add-text-to-pdf",
+  "add-image-to-pdf","add-signature-to-pdf","pdf-highlight-tool","pdf-drawing-tool","pdf-annotation-tool","pdf-whiteout-tool"
+]);
 
-export default function PDFTool({toolId}:{toolId:string}){return <PDFToolInstance key={toolId} toolId={toolId as PdfToolId}/>;}
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  queueMicrotask(() => URL.revokeObjectURL(url));
+}
 
-function PDFToolInstance({toolId:id}:{toolId:PdfToolId}){
-  const [files,setFiles]=useState<File[]>([]),[pages,setPages]=useState<number[]>([]),[selected,setSelected]=useState<number[]>([]),[thumbs,setThumbs]=useState<Record<number,string>>({});
-  const [result,setResult]=useState<PdfOutput|null>(null),[error,setError]=useState(""),[message,setMessage]=useState(""),[progress,setProgress]=useState(0),[busy,setBusy]=useState(false);
-  const [text,setText]=useState(""),[pagesText,setPagesText]=useState(""),[groupsText,setGroupsText]=useState(""),[orderText,setOrderText]=useState(""),[passwordLength,setPasswordLength]=useState(24);
-  const [options,setOptions]=useState<PdfProcessOptions>({}),[formFields,setFormFields]=useState<Array<{name:string;type:string;options?:string[]}>>([]),[formValues,setFormValues]=useState<Record<string,string|boolean>>({});
-  const [signature,setSignature]=useState<string|null>(null),[drawing,setDrawing]=useState<Array<{x1:number;y1:number;x2:number;y2:number}>>([]),[drawStart,setDrawStart]=useState<{x:number;y:number}|null>(null),[viewer,setViewer]=useState<string|null>(null);
-  const fileRef=useRef<HTMLInputElement>(null),imageRef=useRef<HTMLInputElement>(null),sigRef=useRef<HTMLInputElement>(null),canvasRef=useRef<HTMLCanvasElement>(null),abortRef=useRef<AbortController|null>(null),thumbAbort=useRef(new AbortController()),busyThumb=useRef(new Set<number>());
-  const needsPdf=!IMAGE_INPUT.has(id)&&id!=="text-to-pdf"&&id!=="pdf-password-generator";
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes)) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unit = units[0];
+  for (let i = 1; i < units.length && value >= 1024; i++) {
+    value /= 1024;
+    unit = units[i];
+  }
+  return `${value.toFixed(value >= 100 ? 0 : 1)} ${unit}`;
+}
 
-  useEffect(()=>()=>{abortRef.current?.abort();thumbAbort.current.abort();if(files[0])void releasePdfDocument(files[0]);},[files]);
-  useEffect(()=>()=>{if(viewer)URL.revokeObjectURL(viewer);},[viewer]);
-  useEffect(()=>()=>{if(signature)URL.revokeObjectURL(signature);},[signature]);
+function parsePages(value: string) {
+  const pages: number[] = [];
+  for (const token of value.split(",").map((x) => x.trim()).filter(Boolean)) {
+    if (/^\d+$/.test(token)) pages.push(Number(token) - 1);
+    else if (/^\d+-\d+$/.test(token)) {
+      const [a,b] = token.split("-").map(Number);
+      const start = Math.min(a,b), end = Math.max(a,b);
+      for (let n=start; n<=end; n++) pages.push(n-1);
+    }
+  }
+  return [...new Set(pages)];
+}
 
-  const clearThumbs=()=>{Object.values(thumbs).forEach(u=>URL.revokeObjectURL(u));setThumbs({});};
-  async function selectFiles(next:File[]){
-    setError("");setResult(null);clearThumbs();setSelected([]);setFormFields([]);setFormValues({});
-    if(!next.length)return;
-    if(needsPdf&&next.some(f=>f.type!=="application/pdf"&&!/\.pdf$/i.test(f.name)))return setError("Please select PDF files.");
-    if(next.some(f=>f.size<=0))return setError("One of the selected files is empty.");
-    if(next.some(f=>f.size>256*1024*1024)&&needsPdf)return setError("A PDF cannot exceed 256 MB.");
-    if(IMAGE_INPUT.has(id)&&next.some(f=>f.size>20*1024*1024))return setError("Each image must be 20 MB or smaller.");
-    const multi=id==="merge-pdf"||id==="images-to-pdf";
-    if(next.length>1&&!multi)return setError("This tool accepts one file at a time.");
+interface PDFToolProps { toolId: string; }
+
+export default function PDFTool({ toolId }: PDFToolProps) {
+  return <PDFToolInstance key={toolId} toolId={toolId} />;
+}
+
+function PDFToolInstance({ toolId }: PDFToolProps) {
+  const id = toolId as PdfToolId;
+  const [files, setFiles] = useState<File[]>([]);
+  const [pages, setPages] = useState<number[]>([]);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [pageImages, setPageImages] = useState<Record<number,string>>({});
+  const [result, setResult] = useState<PdfOutput | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [options, setOptions] = useState<PdfProcessOptions>({});
+  const [textValue, setTextValue] = useState("");
+  const [passwordLength, setPasswordLength] = useState("24");
+  const [pageInput, setPageInput] = useState("");
+  const [duplicateMode, setDuplicateMode] = useState<"before" | "after">("after");
+  const [busy, setBusy] = useState(false);
+  const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const signatureCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const needsPdf = !["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf","text-to-pdf","pdf-password-generator"].includes(id);
+  const needsImages = ["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf"].includes(id);
+  const pageTool = PAGE_TOOLS.has(id);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (viewerUrl) URL.revokeObjectURL(viewerUrl);
+    };
+  }, [viewerUrl]);
+
+
+  async function loadFileSelection(next: File[]) {
+    setError("");
+    setResult(null);
+    setPageImages({});
+    if (!next.length) return;
+    if (needsPdf && next.some((file) => file.type !== "application/pdf" && !/\.pdf$/i.test(file.name))) {
+      setError("Please select PDF files.");
+      return;
+    }
+    if (next.some((file) => file.size <= 0)) {
+      setError("One of the selected files is empty.");
+      return;
+    }
+    if (next.some((file) => file.size > 256 * 1024 * 1024)) {
+      setError("A selected file is too large for safe browser processing.");
+      return;
+    }
     setFiles(next);
-    if(needsPdf){try{const info=await inspectPdf(next[0]);const n=Number(info.pageCount??0);setPages(Array.from({length:n},(_,i)=>i));setFormFields(Array.isArray(info.formFields)?info.formFields as never:[]);}catch(e){setFiles([]);setPages([]);setError(e instanceof Error?e.message:"The PDF could not be opened.");}}
+    if (needsPdf) {
+      try {
+        const info = await inspectPdf(next[0]);
+        const count = Number(info.pageCount ?? 0);
+        setPages(Array.from({ length: count }, (_, i) => i));
+        setSelected([]);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "The PDF could not be opened.");
+      }
+    }
   }
-  async function thumb(i:number){if(!files[0]||thumbs[i]||busyThumb.current.has(i))return;busyThumb.current.add(i);try{const u=await renderPdfPage(files[0],i,.42,thumbAbort.current.signal);setThumbs(x=>({...x,[i]:u}));}catch{}finally{busyThumb.current.delete(i);}}
-  function setOpt<K extends keyof PdfProcessOptions>(k:K,v:PdfProcessOptions[K]){setOptions(x=>({...x,[k]:v}));}
-  async function loadImage(f:File,key:"imageBytes"|"signatureBytes"){if(f.size>20*1024*1024)throw new Error("Image must be 20 MB or smaller.");const b=await createImageBitmap(f);try{const c=document.createElement("canvas");c.width=b.width;c.height=b.height;const ctx=c.getContext("2d");if(!ctx)throw new Error("Canvas unavailable.");ctx.drawImage(b,0,0);const out=await new Promise<Blob|null>(r=>c.toBlob(r,"image/png"));if(!out)throw new Error("Could not decode image.");setOpt(key,new Uint8Array(await out.arrayBuffer()));if(key==="signatureBytes"){if(signature)URL.revokeObjectURL(signature);setSignature(URL.createObjectURL(out));}else setOpt("imageMimeType","image/png");}finally{b.close();}}
-  async function process(){
-    setError("");setResult(null);abortRef.current?.abort();const ac=new AbortController();abortRef.current=ac;setBusy(true);setProgress(0);setMessage("");
-    try{
-      const o:PdfProcessOptions={...options,formValues,drawing};if(text){o.text=text;o.watermarkText=text;o.stampText=text;}if(id==="pdf-password-generator")o.passwordLength=passwordLength;
-      if(id==="split-pdf"&&groupsText.trim())o.pageGroups=parseGroups(groupsText,pages.length);
-      else if((id==="reorder-pdf-pages"||id==="pdf-page-organizer")&&orderText.trim())o.pageOrder=parsePages(orderText,pages.length);
-      else if(pagesText.trim()){const p=parsePages(pagesText,pages.length);if(IMAGE_OUTPUT.has(id))o.pageIndices=p;else o.pages=p;}
-      else if(PAGE_WORK.has(id)&&selected.length)o.pages=selected;
-      if(id==="duplicate-pdf-pages"){if(!o.pages?.length)throw new Error("Select a page first.");o.duplicatePage=o.pages[0];}
-      if(id==="pdf-drawing-tool"&&!drawing.length)throw new Error("Draw at least one line.");
-      if(id==="add-image-to-pdf"&&!o.imageBytes)throw new Error("Choose an image first.");
-      if(id==="add-signature-to-pdf"&&!o.signatureBytes)throw new Error("Choose a signature image first.");
-      if(needsPdf&&!files.length)throw new PdfEngineError("INVALID_INPUT","Select a file first.");
-      const out=await processPdf(id,files,o,ac.signal,p=>{setProgress(p.progress);setMessage(p.message);});setResult(out);setProgress(1);setMessage("Completed");
-      if(out.blob&&id==="pdf-viewer"){if(viewer)URL.revokeObjectURL(viewer);setViewer(URL.createObjectURL(out.blob));}
-    }catch(e){setError(e instanceof Error?e.message:"PDF processing failed.");}finally{if(abortRef.current===ac)abortRef.current=null;setBusy(false);}
+
+  async function handleProcess() {
+    setError("");
+    setResult(null);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setBusy(true);
+    setProgress(0);
+    try {
+      let processOptions: PdfProcessOptions = { ...options };
+      if (textValue) processOptions.text = textValue;
+      if (passwordLength) processOptions.passwordLength = Number(passwordLength);
+      if (pageInput) {
+        const parsed = parsePages(pageInput);
+        if (id === "reorder-pdf-pages" || id === "pdf-page-organizer") processOptions.pageOrder = parsed;
+        else processOptions.pages = parsed;
+      } else if (pageTool && selected.length) {
+        processOptions.pages = selected;
+      }
+      if (id === "duplicate-pdf-pages") {
+        const duplicatePages = processOptions.pages?.length ? processOptions.pages : selected;
+        if (!duplicatePages.length) throw new PdfEngineError("INVALID_OPTIONS", "Select at least one page to duplicate.");
+        processOptions.duplicatePages = duplicatePages;
+        processOptions.duplicateMode = duplicateMode;
+      }
+
+      if (id === "pdf-password-generator") {
+        const output = await processPdf(id, [], processOptions, controller.signal, (p) => {
+          setProgress(p.progress); setMessage(p.message);
+        });
+        setResult(output);
+      } else {
+        if (!files.length) throw new PdfEngineError("INVALID_INPUT", "Select a file first.");
+        const output = await processPdf(id, files, processOptions, controller.signal, (p) => {
+          setProgress(p.progress); setMessage(p.message);
+        });
+        setResult(output);
+        if (output.blob && id === "pdf-viewer") {
+          if (viewerUrl) URL.revokeObjectURL(viewerUrl);
+          setViewerUrl(URL.createObjectURL(output.blob));
+        }
+      }
+      setProgress(1);
+      setMessage("Completed");
+    } catch (e) {
+      const message = e instanceof PdfEngineError || e instanceof Error ? e.message : "PDF processing failed.";
+      setError(message);
+    } finally {
+      setBusy(false);
+    }
   }
-  function reset(){abortRef.current?.abort();thumbAbort.current.abort();if(files[0])void releasePdfDocument(files[0]);clearThumbs();if(viewer)URL.revokeObjectURL(viewer);if(signature)URL.revokeObjectURL(signature);thumbAbort.current=new AbortController();setFiles([]);setPages([]);setSelected([]);setResult(null);setError("");setMessage("");setProgress(0);setText("");setPagesText("");setGroupsText("");setOrderText("");setOptions({});setFormFields([]);setFormValues({});setSignature(null);setDrawing([]);if(fileRef.current)fileRef.current.value="";if(imageRef.current)imageRef.current.value="";if(sigRef.current)sigRef.current.value="";}
-  function pointer(e:PointerEvent<HTMLCanvasElement>){const c=canvasRef.current;if(!c)return;const r=c.getBoundingClientRect(),p={x:(e.clientX-r.left)*c.width/r.width,y:(e.clientY-r.top)*c.height/r.height};if(!drawStart){setDrawStart(p);return;}setDrawing(x=>[...x,{x1:drawStart.x,y1:drawStart.y,x2:p.x,y2:p.y}]);setDrawStart(p);const ctx=c.getContext("2d");if(ctx){ctx.strokeStyle=options.color??"#ef4444";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(drawStart.x,drawStart.y);ctx.lineTo(p.x,p.y);ctx.stroke();}}
 
-  if(!IDS.has(id))return <div className="rounded-2xl border p-4">Unsupported PDF tool.</div>;
-  const pageInput=["delete-pdf-pages","extract-pdf-pages","rotate-pdf","reverse-pdf-pages"].includes(id)||IMAGE_OUTPUT.has(id);
-  const orderInput=["reorder-pdf-pages","pdf-page-organizer"].includes(id);
-  const textInput=["pdf-watermark","pdf-stamp","add-text-to-pdf","pdf-annotation-tool"].includes(id);
-  return <section className="w-full min-w-0 space-y-4 sm:space-y-6">
-    <div className="rounded-2xl border-2 border-dashed p-4 text-center sm:p-6" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();void selectFiles(Array.from(e.dataTransfer.files));}}>
-      <input ref={fileRef} type="file" className="sr-only" accept={needsPdf?"application/pdf,.pdf":"image/*"} multiple={id==="merge-pdf"||id==="images-to-pdf"} onChange={e=>void selectFiles(Array.from(e.target.files??[]))}/>
-      <button type="button" className="w-full rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground sm:w-auto" onClick={()=>fileRef.current?.click()}>Select {needsPdf?"PDF":"image"} file{IMAGE_INPUT.has(id)?"s":""}</button>
-      <p className="mt-2 text-xs text-muted-foreground sm:text-sm">Files are processed locally in your browser.</p>
-      {files.length>0&&<div className="mt-3 break-words text-xs sm:text-sm">{files.map(f=>`${f.name} (${bytes(f.size)})`).join(" • ")}</div>}
-    </div>
+  async function renderThumbnail(index: number) {
+    if (!files[0] || pageImages[index]) return;
+    try {
+      const dataUrl = await renderPdfPage(files[0], index, 0.42);
+      setPageImages((current) => ({ ...current, [index]: dataUrl }));
+    } catch {
+      // Thumbnail failures must not break the page workspace.
+    }
+  }
 
-    {id==="text-to-pdf"&&<textarea className="min-h-48 w-full resize-y rounded-xl border p-3 text-sm sm:min-h-52 sm:p-4" value={text} onChange={e=>setText(e.target.value)} placeholder="Enter text to convert to PDF"/>}
-    {id==="pdf-password-generator"&&<label className="block text-sm">Password length<input className="mt-2 w-full rounded-xl border p-3" type="number" min={8} max={128} value={passwordLength} onChange={e=>setPasswordLength(Math.max(8,Math.min(128,+e.target.value||24)))}/></label>}
+  function togglePage(index: number) {
+    setSelected((current) => current.includes(index) ? current.filter((p) => p !== index) : [...current, index]);
+  }
 
-    {PAGE_WORK.has(id)&&files.length>0&&pages.length>0&&<div className="rounded-2xl border p-3 sm:p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold">PDF Page Workspace</h2><p className="text-xs text-muted-foreground sm:text-sm">Tap pages to select them.</p></div><button type="button" className="w-full rounded-lg border px-3 py-2 text-sm sm:w-auto" onClick={()=>setSelected(selected.length===pages.length?[]:pages)}>{selected.length===pages.length?"Clear all":"Select all"}</button></div>
-      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3 lg:grid-cols-6">{pages.map(i=><button key={i} type="button" className={`min-w-0 overflow-hidden rounded-xl border text-left ${selected.includes(i)?"ring-2 ring-primary":""}`} onClick={()=>{setSelected(s=>s.includes(i)?s.filter(x=>x!==i):[...s,i]);void thumb(i)}} onFocus={()=>void thumb(i)}>{thumbs[i]?<Image src={thumbs[i]} alt={`Page ${i+1}`} width={500} height={700} unoptimized className="aspect-[3/4] w-full object-cover"/>:<div className="flex aspect-[3/4] items-center justify-center bg-muted text-xs">Page {i+1}</div>}<div className="truncate p-2 text-xs">Page {i+1}</div></button>)}</div>
-    </div>}
+  function reset() {
+    abortRef.current?.abort();
+    if (viewerUrl) URL.revokeObjectURL(viewerUrl);
+    Object.values(pageImages).forEach((url) => URL.revokeObjectURL(url));
+    setViewerUrl(null);
+    setFiles([]);
+    setPages([]);
+    setSelected([]);
+    setPageImages({});
+    setResult(null);
+    setError("");
+    setProgress(0);
+    setMessage("");
+    setTextValue("");
+    setPageInput("");
+    setDuplicateMode("after");
+    setOptions({});
+    if (inputRef.current) inputRef.current.value = "";
+  }
 
-    {pageInput&&<label className="block text-sm">Pages {IMAGE_OUTPUT.has(id)?"(optional)":"(required)"}<input className="mt-2 w-full rounded-xl border p-3 text-sm" placeholder="Example: 1,3-5" value={pagesText} onChange={e=>setPagesText(e.target.value)}/></label>}
-    {id==="split-pdf"&&<label className="block text-sm">Split groups<input className="mt-2 w-full rounded-xl border p-3 text-sm" placeholder="Example: 1-3;4-6;7" value={groupsText} onChange={e=>setGroupsText(e.target.value)}/></label>}
-    {orderInput&&<label className="block text-sm">Complete page order<input className="mt-2 w-full rounded-xl border p-3 text-sm" placeholder="Example: 3,1,2,4" value={orderText} onChange={e=>setOrderText(e.target.value)}/></label>}
-    {textInput&&<div className="grid gap-3 sm:grid-cols-2"><input className="w-full rounded-xl border p-3 text-sm" placeholder="Text" value={text} onChange={e=>setText(e.target.value)}/><input className="w-full rounded-xl border p-3 text-sm" type="number" min={6} max={96} value={options.fontSize??18} onChange={e=>setOpt("fontSize",+e.target.value)}/></div>}
-    {(textInput||["pdf-highlight-tool","pdf-whiteout-tool","add-image-to-pdf","add-signature-to-pdf"].includes(id))&&<div className="grid gap-3 sm:grid-cols-2"><label className="text-sm">X<input className="mt-1 w-full rounded-xl border p-3" type="number" value={options.x??40} onChange={e=>setOpt("x",+e.target.value)}/></label><label className="text-sm">Y<input className="mt-1 w-full rounded-xl border p-3" type="number" value={options.y??40} onChange={e=>setOpt("y",+e.target.value)}/></label></div>}
-    {["pdf-highlight-tool","pdf-whiteout-tool"].includes(id)&&<div className="grid gap-3 sm:grid-cols-2"><label className="text-sm">Width<input className="mt-1 w-full rounded-xl border p-3" type="number" min={10} value={options.whiteout?.width??180} onChange={e=>setOpt("whiteout",{x:options.x??40,y:options.y??40,width:+e.target.value,height:options.whiteout?.height??40})}/></label><label className="text-sm">Height<input className="mt-1 w-full rounded-xl border p-3" type="number" min={10} value={options.whiteout?.height??40} onChange={e=>setOpt("whiteout",{x:options.x??40,y:options.y??40,width:options.whiteout?.width??180,height:+e.target.value})}/></label></div>}
-    {id==="add-image-to-pdf"&&<div className="rounded-2xl border p-3 sm:p-4"><input ref={imageRef} type="file" accept="image/png,image/jpeg,image/webp,image/bmp" className="w-full text-sm" onChange={async e=>{try{const f=e.target.files?.[0];if(f)await loadImage(f,"imageBytes")}catch(x){setError(x instanceof Error?x.message:"Image could not be loaded.")}}}/><div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm">Position<select className="mt-1 w-full rounded-xl border p-3" value={options.imagePosition??"center"} onChange={e=>setOpt("imagePosition",e.target.value as PdfProcessOptions["imagePosition"])}>{["top-left","top-center","top-right","center-left","center","center-right","bottom-left","bottom-center","bottom-right"].map(p=><option key={p}>{p}</option>)}</select></label><label className="text-sm">Size<input className="mt-2 w-full" type="range" min={5} max={100} value={options.imageScale??35} onChange={e=>setOpt("imageScale",+e.target.value)}/></label></div></div>}
-    {id==="add-signature-to-pdf"&&<div className="rounded-2xl border p-3 sm:p-4"><input ref={sigRef} type="file" accept="image/png,image/jpeg,image/webp" className="w-full text-sm" onChange={async e=>{try{const f=e.target.files?.[0];if(f)await loadImage(f,"signatureBytes")}catch(x){setError(x instanceof Error?x.message:"Signature could not be loaded.")}}}/>{signature&&<Image src={signature} alt="Signature preview" width={320} height={120} unoptimized className="mt-3 max-h-28 w-auto max-w-full border object-contain" />}<label className="mt-3 block text-sm">Signature size<input className="mt-2 w-full" type="range" min={5} max={100} value={options.imageScale??35} onChange={e=>setOpt("imageScale",+e.target.value)}/></label></div>}
-    {id==="pdf-drawing-tool"&&<div className="rounded-2xl border p-3 sm:p-4"><canvas ref={canvasRef} width={595} height={842} className="mx-auto block h-auto w-full max-w-xl touch-none rounded border bg-white" onPointerDown={e=>{e.currentTarget.setPointerCapture(e.pointerId);pointer(e)}} onPointerMove={e=>{if(e.buttons===1)pointer(e)}} onPointerUp={()=>setDrawStart(null)}/><button type="button" className="mt-3 w-full rounded-lg border px-3 py-2 sm:w-auto" onClick={()=>{setDrawing([]);canvasRef.current?.getContext("2d")?.clearRect(0,0,595,842)}}>Clear drawing</button></div>}
-    {FORM.has(id)&&formFields.length>0&&<div className="space-y-3 rounded-2xl border p-3 sm:p-4"><h3 className="font-semibold">Form fields</h3>{formFields.map(f=><label key={f.name} className="block text-sm"><span className="break-all">{f.name} <span className="text-xs text-muted-foreground">({f.type})</span></span>{f.type.includes("CheckBox")?<input className="ml-3 h-4 w-4 align-middle" type="checkbox" checked={Boolean(formValues[f.name])} onChange={e=>setFormValues(v=>({...v,[f.name]:e.target.checked}))}/>:f.options?.length?<select className="mt-1 w-full rounded-xl border p-3" value={String(formValues[f.name]??"")} onChange={e=>setFormValues(v=>({...v,[f.name]:e.target.value}))}><option value="">Select…</option>{f.options.map(x=><option key={x}>{x}</option>)}</select>:<input className="mt-1 w-full rounded-xl border p-3" value={String(formValues[f.name]??"")} onChange={e=>setFormValues(v=>({...v,[f.name]:e.target.value}))}/>}</label>)}</div>}
-    {busy&&<div className="rounded-xl border p-3" role="status"><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width] duration-150" style={{width:`${Math.round(progress*100)}%`}}/></div><p className="mt-2 break-words text-xs sm:text-sm">{Math.round(progress*100)}% — {message}</p></div>}
-    {error&&<div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive" role="alert">{error}</div>}
-    {result?.metadata&&<pre className="max-h-96 overflow-auto rounded-xl border bg-muted p-3 text-xs">{JSON.stringify(result.metadata,null,2)}</pre>}
-    {result?.text&&<div className="rounded-xl border p-3"><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all text-xs sm:text-sm">{result.text}</pre><button type="button" className="mt-3 w-full rounded-lg border px-3 py-2 sm:w-auto" onClick={()=>void navigator.clipboard?.writeText(result.text!)}>Copy</button></div>}
-    {viewer&&<div className="overflow-hidden rounded-xl border"><iframe title="PDF preview" src={viewer} className="h-[55vh] w-full sm:h-[70vh]"/></div>}
-    {result?.images&&<div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4">{result.images.map(im=><PdfImageCard key={im.pageIndex} image={im} />)}</div>}
-    {result?.outputs&&<div className="space-y-2 rounded-xl border p-3"><h3 className="font-semibold">Generated PDFs ({result.outputs.length})</h3>{result.outputs.map((x,i)=><div key={`${x.filename}-${i}`} className="flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between"><span className="break-all text-xs sm:text-sm">{x.filename} • {bytes(x.size??0)}</span>{x.blob&&<button type="button" className="w-full rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground sm:w-auto" onClick={()=>download(x.blob!,x.filename??"workabhi.pdf")}>Download</button>}</div>)}</div>}
-    {result?.blob&&<div className="flex flex-col gap-2 rounded-xl border p-3 sm:flex-row sm:items-center sm:justify-between"><span className="break-all text-xs sm:text-sm">{result.filename} • {bytes(result.size??result.blob.size)}</span><button type="button" className="w-full rounded-lg bg-primary px-4 py-3 text-sm text-primary-foreground sm:w-auto" onClick={()=>download(result.blob!,result.filename??"workabhi.pdf")}>Download</button></div>}
-    <div className="flex flex-col gap-2 sm:flex-row"><button type="button" disabled={busy} className="w-full rounded-xl bg-primary px-5 py-3 text-sm text-primary-foreground disabled:opacity-50 sm:w-auto" onClick={()=>void process()}>{busy?"Processing…":"Process PDF"}</button>{busy&&<button type="button" className="w-full rounded-xl border px-5 py-3 text-sm sm:w-auto" onClick={()=>abortRef.current?.abort()}>Cancel</button>}<button type="button" className="w-full rounded-xl border px-5 py-3 text-sm sm:w-auto" onClick={reset}>Reset</button></div>
-    <p className="text-xs leading-5 text-muted-foreground">Browser-only PDF engine. Complex XFA, true PDF annotations/redactions, password encryption/decryption and digital-signature preservation require capabilities not provided by pdf-lib and are reported instead of being silently faked.</p>
-  </section>;
+  if (!PDF_TOOLS.has(id)) return <div className="rounded-2xl border p-6">Unsupported PDF tool.</div>;
+
+  return (
+    <section className="space-y-6">
+      <div
+        className="rounded-2xl border-2 border-dashed p-6 text-center transition hover:border-primary"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => { e.preventDefault(); void loadFileSelection(Array.from(e.dataTransfer.files)); }}
+      >
+        <input
+          ref={inputRef}
+          type="file"
+          accept={needsImages ? "image/*" : "application/pdf,.pdf"}
+          multiple={id === "merge-pdf" || id === "images-to-pdf"}
+          className="sr-only"
+          onChange={(e) => void loadFileSelection(Array.from(e.target.files ?? []))}
+          aria-label="Select PDF files"
+        />
+        <button type="button" className="rounded-xl bg-primary px-4 py-2 text-primary-foreground" onClick={() => inputRef.current?.click()}>
+          Select {needsImages ? "image" : "PDF"} file{needsImages ? "s" : ""}
+        </button>
+        <p className="mt-2 text-sm text-muted-foreground">Drag and drop files here. Processing stays in your browser.</p>
+        {files.length > 0 && <p className="mt-3 text-sm">{files.map((f) => `${f.name} (${formatBytes(f.size)})`).join(" • ")}</p>}
+      </div>
+
+      {id === "text-to-pdf" && (
+        <textarea className="min-h-48 w-full rounded-xl border p-4" value={textValue} onChange={(e) => setTextValue(e.target.value)} placeholder="Enter text to convert to PDF" />
+      )}
+
+      {["pdf-password-generator"].includes(id) && (
+        <label className="block text-sm">Password length
+          <input className="mt-2 w-full rounded-xl border p-3" type="number" min={8} max={128} value={passwordLength} onChange={(e) => setPasswordLength(e.target.value)} />
+        </label>
+      )}
+
+      {pageTool && files.length > 0 && pages.length > 0 && (
+        <div className="rounded-2xl border p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div><h2 className="font-semibold">PDF Page Workspace</h2><p className="text-sm text-muted-foreground">Select pages for this operation. Thumbnails load lazily.</p></div>
+            <button type="button" className="rounded-lg border px-3 py-2 text-sm" onClick={() => setSelected(selected.length === pages.length ? [] : pages)}>Select all</button>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">
+            {pages.map((index) => (
+              <button
+                key={index}
+                type="button"
+                className={`overflow-hidden rounded-xl border text-left ${selected.includes(index) ? "ring-2 ring-primary" : ""}`}
+                onClick={() => { togglePage(index); void renderThumbnail(index); }}
+                onFocus={() => void renderThumbnail(index)}
+              >
+                {pageImages[index] ? <Image src={pageImages[index]} alt={`Page ${index + 1} preview`} width={600} height={800} unoptimized className="aspect-[3/4] w-full object-cover" /> : <div className="flex aspect-[3/4] items-center justify-center bg-muted text-sm">Page {index + 1}</div>}
+                <div className="p-2 text-xs">Page {index + 1}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {["delete-pdf-pages","extract-pdf-pages","split-pdf"].includes(id) && (
+        <label className="block text-sm">Pages
+          <input className="mt-2 w-full rounded-xl border p-3" placeholder="Example: 1,3-5" value={pageInput} onChange={(e) => setPageInput(e.target.value)} />
+        </label>
+      )}
+
+      {["reorder-pdf-pages","pdf-page-organizer"].includes(id) && (
+        <div className="rounded-2xl border p-4 space-y-3">
+          <div><h3 className="font-semibold">Reorder settings</h3><p className="text-xs text-muted-foreground">Enter the complete final page order. Every page must appear exactly once.</p></div>
+          <input className="w-full rounded-xl border p-3" placeholder="Example: 3,1,2,4" value={pageInput} onChange={(e) => setPageInput(e.target.value)} />
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="rounded-lg border px-3 py-2 text-sm" onClick={() => setPageInput(pages.map((_, i) => i + 1).join(","))}>Reset order</button>
+            <button type="button" className="rounded-lg border px-3 py-2 text-sm" onClick={() => setPageInput(pages.slice().reverse().map((p) => p + 1).join(","))}>Reverse order</button>
+            {selected.length > 0 && <button type="button" className="rounded-lg border px-3 py-2 text-sm" onClick={() => setPageInput([...selected, ...pages.filter((p) => !selected.includes(p))].map((p) => p + 1).join(","))}>Selected pages first</button>}
+          </div>
+        </div>
+      )}
+
+      {id === "duplicate-pdf-pages" && (
+        <div className="rounded-2xl border p-4 space-y-3">
+          <h3 className="font-semibold">Duplicate settings</h3>
+          <p className="text-xs text-muted-foreground">Select one or more pages above. Every selected page will be duplicated.</p>
+          <label className="block text-sm">Insert duplicate
+            <select className="mt-2 w-full rounded-xl border p-3" value={duplicateMode} onChange={(e) => setDuplicateMode(e.target.value as "before" | "after")}>
+              <option value="after">After original page</option><option value="before">Before original page</option>
+            </select>
+          </label>
+          {selected.length > 0 && <p className="text-xs text-muted-foreground">Selected: {selected.map((p) => p + 1).join(", ")}</p>}
+        </div>
+      )}
+
+      {id === "pdf-page-numbering" && (
+        <div className="rounded-2xl border p-4 space-y-3">
+          <h3 className="font-semibold">Page numbering settings</h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-sm">Start numbering at
+              <input className="mt-2 w-full rounded-xl border p-3" type="number" min={0} max={999999} value={options.pageNumberStart ?? 1} onChange={(e) => setOptions((o) => ({ ...o, pageNumberStart: Number(e.target.value) || 1 }))} />
+            </label>
+            <label className="text-sm">Position
+              <select className="mt-2 w-full rounded-xl border p-3" value={options.pageNumberPosition ?? "bottom-center"} onChange={(e) => setOptions((o) => ({ ...o, pageNumberPosition: e.target.value as PdfProcessOptions["pageNumberPosition"] }))}>
+                <option value="top-left">Top left</option><option value="top-center">Top center</option><option value="top-right">Top right</option>
+                <option value="bottom-left">Bottom left</option><option value="bottom-center">Bottom center</option><option value="bottom-right">Bottom right</option>
+              </select>
+            </label>
+          </div>
+          <label className="block text-sm">Pages to number
+            <input className="mt-2 w-full rounded-xl border p-3" placeholder="Leave empty for all pages, or e.g. 2-5,8" value={pageInput} onChange={(e) => setPageInput(e.target.value)} />
+          </label>
+          <label className="block text-sm">Number color
+            <input className="mt-2 h-11 w-full rounded-xl border p-1" type="color" value={options.color ?? "#ef4444"} onChange={(e) => setOptions((o) => ({ ...o, color: e.target.value }))} />
+          </label>
+        </div>
+      )}
+
+      {["rotate-pdf"].includes(id) && (
+        <label className="block text-sm">Rotation
+          <select className="mt-2 rounded-xl border p-3" value={options.rotate ?? 90} onChange={(e) => setOptions((o) => ({ ...o, rotate: Number(e.target.value) as 90|180|270 }))}>
+            <option value="90">90°</option><option value="180">180°</option><option value="270">270°</option>
+          </select>
+        </label>
+      )}
+
+      {["pdf-watermark","pdf-stamp","add-text-to-pdf","pdf-annotation-tool"].includes(id) && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input className="rounded-xl border p-3" placeholder="Text" value={textValue} onChange={(e) => { setTextValue(e.target.value); setOptions((o) => ({ ...o, text: e.target.value, watermarkText: e.target.value, stampText: e.target.value })); }} />
+          <input className="rounded-xl border p-3" type="number" min="6" max="96" placeholder="Font size" value={options.fontSize ?? 18} onChange={(e) => setOptions((o) => ({ ...o, fontSize: Number(e.target.value) }))} />
+        </div>
+      )}
+
+      {["pdf-highlight-tool","pdf-whiteout-tool"].includes(id) && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <input className="rounded-xl border p-3" type="number" placeholder="X" value={options.x ?? 40} onChange={(e) => setOptions((o) => ({ ...o, x: Number(e.target.value) }))} />
+          <input className="rounded-xl border p-3" type="number" placeholder="Y" value={options.y ?? 40} onChange={(e) => setOptions((o) => ({ ...o, y: Number(e.target.value) }))} />
+        </div>
+      )}
+
+      {busy && (
+        <div className="rounded-xl border p-4" role="status">
+          <div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${Math.round(progress * 100)}%` }} /></div>
+          <p className="mt-2 text-sm">{Math.round(progress * 100)}% — {message}</p>
+        </div>
+      )}
+
+      {error && <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive" role="alert">{error}</div>}
+
+      {result?.metadata && (
+        <pre className="max-h-96 overflow-auto rounded-xl border bg-muted p-4 text-xs">{JSON.stringify(result.metadata, null, 2)}</pre>
+      )}
+
+      {result?.text && (
+        <div className="rounded-xl border p-4">
+          <pre className="whitespace-pre-wrap break-all text-sm">{result.text}</pre>
+          <button type="button" className="mt-3 rounded-lg border px-3 py-2" onClick={() => void navigator.clipboard?.writeText(result.text!)}>Copy</button>
+        </div>
+      )}
+
+      {viewerUrl && (
+        <div className="overflow-hidden rounded-xl border">
+          <iframe title="PDF preview" src={viewerUrl} className="h-[70vh] w-full" />
+        </div>
+      )}
+
+      {result?.images && <PdfImageResults images={result.images} />}
+
+      {result?.blob && id !== "pdf-viewer" && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border p-4">
+          <span className="text-sm text-muted-foreground">{result.filename} • {formatBytes(result.size ?? result.blob.size)}</span>
+          <button type="button" className="rounded-lg bg-primary px-4 py-2 text-primary-foreground" onClick={() => downloadBlob(result.blob!, result.filename ?? "workabhi.pdf")}>Download</button>
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-3">
+        <button type="button" disabled={busy} className="rounded-xl bg-primary px-5 py-3 text-primary-foreground disabled:opacity-50" onClick={() => void handleProcess()}>{busy ? "Processing…" : "Process PDF"}</button>
+        {busy && <button type="button" className="rounded-xl border px-5 py-3" onClick={() => abortRef.current?.abort()}>Cancel</button>}
+        <button type="button" className="rounded-xl border px-5 py-3" onClick={reset}>Reset</button>
+      </div>
+
+      <p className="text-xs text-muted-foreground">Privacy: selected files are processed locally in your browser. No PDF upload is performed by this module.</p>
+    </section>
+  );
 }
 
 
-function PdfImageCard({image}:{image:{blob:Blob;filename:string;pageIndex:number}}){
-  const [url,setUrl]=useState<string|null>(null);
-  useEffect(()=>{const u=URL.createObjectURL(image.blob);setUrl(u);return()=>URL.revokeObjectURL(u)},[image.blob]);
-  return <div className="min-w-0 rounded-xl border p-2">
-    {url&&<Image src={url} alt={`Page ${image.pageIndex+1}`} width={800} height={1100} unoptimized className="h-auto w-full"/>}
-    <button type="button" className="mt-2 w-full rounded-lg border px-2 py-2 text-xs" onClick={()=>download(image.blob,image.filename)}>Download page {image.pageIndex+1}</button>
-  </div>;
+function PdfImageResults({ images }: { images: NonNullable<PdfOutput["images"]> }) {
+  const urls = useMemo(() => {
+    const next: Record<number, string> = {};
+    for (const image of images) next[image.pageIndex] = URL.createObjectURL(image.blob);
+    return next;
+  }, [images]);
+
+  useEffect(() => {
+    return () => Object.values(urls).forEach((url) => URL.revokeObjectURL(url));
+  }, [urls]);
+
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      {images.map((image) => {
+        const url = urls[image.pageIndex];
+        return (
+          <div key={image.pageIndex} className="rounded-xl border p-2">
+            {url && (
+              <Image
+                src={url}
+                alt={`PDF page ${image.pageIndex + 1}`}
+                width={800}
+                height={1100}
+                unoptimized
+                className="h-auto w-full"
+              />
+            )}
+            <button type="button" className="mt-2 w-full rounded-lg border px-3 py-2 text-sm" onClick={() => downloadBlob(image.blob, image.filename)}>Download page {image.pageIndex + 1}</button>
+          </div>
+        );
+      })}
+    </div>
+  );
 }

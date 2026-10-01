@@ -1,237 +1,735 @@
-import { PDFDocument, StandardFonts, degrees, rgb, type PDFPage } from "pdf-lib";
-import type { PdfOutput, PdfProcessOptions, PdfProgress, PdfToolId } from "@/engine/pdf/pdfTypes";
-import { PdfEngineError } from "@/engine/pdf/pdfTypes";
+import {
+  PDFDocument,
+  StandardFonts,
+  degrees,
+  rgb,
+  type PDFPage,
+} from "pdf-lib";
+import type {
+  PdfOutput,
+  PdfProcessOptions,
+  PdfProgress,
+  PdfToolId,
+} from "./pdfTypes";
+import { PdfEngineError } from "./pdfTypes";
 
-const MAX_INPUT_BYTES=256*1024*1024;
-const MAX_IMAGE_INPUT_BYTES=20*1024*1024;
-const MAX_MERGE_BYTES=256*1024*1024;
-const MAX_PAGES=500;
-const MAX_RENDER_PIXELS=24_000_000;
-const MAX_IMAGE_PIXELS=25_000_000;
+const MAX_INPUT_BYTES = 256 * 1024 * 1024;
+const MAX_PAGES = 500;
+const MAX_RENDER_PIXELS = 24_000_000;
 
-function browser(){if(typeof window==="undefined")throw new PdfEngineError("BROWSER_UNSUPPORTED","PDF processing is available in the browser only.");}
-function abort(signal?:AbortSignal){if(signal?.aborted)throw new PdfEngineError("CANCELLED","PDF processing was cancelled.");}
-function progress(v:number,m:string,cb?:(p:PdfProgress)=>void){cb?.({progress:Math.max(0,Math.min(1,v)),message:m});}
-function base(n:string){return n.replace(/\.[^.]+$/,"");}
-function safe(n:string){return n.replace(/[<>:"/\\|?*\u0000-\u001F]/g,"_").trim()||"workabhi";}
-function ensurePdf(file:File){
-  if(!file||file.size<=0)throw new PdfEngineError("EMPTY_FILE","The selected PDF is empty.");
-  if(file.size>MAX_INPUT_BYTES)throw new PdfEngineError("TOO_LARGE","This PDF exceeds the 256 MB browser safety limit.");
-  if(file.type!=="application/pdf"&&!/\.pdf$/i.test(file.name))throw new PdfEngineError("NOT_PDF","Please select a PDF file.");
-}
-async function bytes(file:File){const b=new Uint8Array(await file.arrayBuffer());if(new TextDecoder().decode(b.slice(0,8)).startsWith("%PDF-")===false)throw new PdfEngineError("NOT_PDF","The selected file is not a valid PDF.");return b;}
-async function load(file:File,signal?:AbortSignal){
-  abort(signal);ensurePdf(file);const b=await bytes(file);abort(signal);
-  try{
-    const pdf=await PDFDocument.load(b,{ignoreEncryption:false,updateMetadata:false});
-    const count=pdf.getPageCount();
-    if(!count)throw new PdfEngineError("CORRUPT_PDF","The PDF contains no pages.");
-    if(count>MAX_PAGES)throw new PdfEngineError("MEMORY_RISK",`This PDF has ${count} pages. The browser limit is ${MAX_PAGES}.`);
-    return pdf;
-  }catch(e){
-    if(e instanceof PdfEngineError)throw e;
-    const msg=e instanceof Error?e.message:String(e);
-    if(/encrypt|password|encrypted/i.test(msg))throw new PdfEngineError("ENCRYPTED_PDF","This PDF is encrypted or password-protected and cannot be modified by the browser PDF engine.");
-    throw new PdfEngineError("CORRUPT_PDF","The PDF could not be opened. It may be malformed or use unsupported features.");
+function assertBrowser() {
+  if (typeof window === "undefined") {
+    throw new PdfEngineError("BROWSER_UNSUPPORTED", "PDF processing is available in the browser only.");
   }
 }
-function blob(b:Uint8Array){return new Blob([b as BlobPart],{type:"application/pdf"});}
-async function save(pdf:PDFDocument,name:string,signal?:AbortSignal){abort(signal);const b=await pdf.save({useObjectStreams:true});abort(signal);const out=blob(b);return {blob:out,filename:safe(name),mimeType:"application/pdf",size:out.size};}
-function color(v="#ef4444"){const m=/^#?([0-9a-f]{6})$/i.exec(v.trim());if(!m)return rgb(.94,.27,.27);const n=parseInt(m[1],16);return rgb((n>>16&255)/255,(n>>8&255)/255,(n&255)/255);}
-function page(pdf:PDFDocument,i:number){if(!Number.isInteger(i)||i<0||i>=pdf.getPageCount())throw new PdfEngineError("PAGE_RANGE",`Page ${i+1} is outside the PDF.`);return pdf.getPage(i);}
-function point(p:PDFPage,x:number,y:number){return{x:Math.max(0,x),y:Math.max(0,p.getHeight()-Math.max(0,y))};}
-function validatePages(indices:number[],count:number){
-  const u=[...new Set(indices)];if(!u.length)throw new PdfEngineError("INVALID_OPTIONS","Select at least one page.");
-  if(u.some(i=>!Number.isInteger(i)||i<0||i>=count))throw new PdfEngineError("PAGE_RANGE","One or more selected pages are outside the PDF.");
-  return u;
+
+function assertNotAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new PdfEngineError("CANCELLED", "PDF processing was cancelled.");
+  }
 }
-async function copyPages(pdf:PDFDocument,indices:number[],signal?:AbortSignal,cb?:(p:PdfProgress)=>void){
-  const ids=validatePages(indices,pdf.getPageCount());const out=await PDFDocument.create();const pages=await out.copyPages(pdf,ids);
-  for(let i=0;i<pages.length;i++){abort(signal);out.addPage(pages[i]);progress((i+1)/pages.length,`Copying page ${i+1} of ${pages.length}`,cb);}
+
+function report(progress: PdfProgress["progress"], message: string, onProgress?: (p: PdfProgress) => void) {
+  onProgress?.({ progress: Math.max(0, Math.min(1, progress)), message });
+}
+
+function sanitizeName(name: string) {
+  return name.replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_").trim() || "workabhi";
+}
+
+function ensurePdfFile(file: File) {
+  if (!file || file.size <= 0) {
+    throw new PdfEngineError("EMPTY_FILE", "The selected PDF is empty.");
+  }
+  if (file.size > MAX_INPUT_BYTES) {
+    throw new PdfEngineError("TOO_LARGE", "This PDF is too large for safe browser processing. Try a smaller file.");
+  }
+  const looksPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+  if (!looksPdf) {
+    throw new PdfEngineError("NOT_PDF", "Please select a valid PDF file.");
+  }
+}
+
+async function loadPdf(file: File): Promise<PDFDocument> {
+  ensurePdfFile(file);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  try {
+    const pdf = await PDFDocument.load(bytes, {
+      ignoreEncryption: false,
+      updateMetadata: false,
+    });
+    const pages = pdf.getPageCount();
+    if (pages <= 0) throw new PdfEngineError("CORRUPT_PDF", "The PDF contains no pages.");
+    if (pages > MAX_PAGES) {
+      throw new PdfEngineError("MEMORY_RISK", `This PDF has ${pages} pages. Browser processing is limited to ${MAX_PAGES} pages at a time.`);
+    }
+    return pdf;
+  } catch (error) {
+    if (error instanceof PdfEngineError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    if (/encrypt|password|encrypted/i.test(message)) {
+      throw new PdfEngineError("ENCRYPTED_PDF", "This PDF is password-protected or encrypted and cannot be modified by the current browser library.");
+    }
+    throw new PdfEngineError("CORRUPT_PDF", "The PDF could not be opened. It may be corrupt, malformed, or use unsupported features.");
+  }
+}
+
+function bytesToBlob(bytes: Uint8Array) {
+  return new Blob([bytes as BlobPart], { type: "application/pdf" });
+}
+
+async function savePdf(pdf: PDFDocument, filename: string): Promise<PdfOutput> {
+  const bytes = await pdf.save({ useObjectStreams: true });
+  const blob = bytesToBlob(bytes);
+  return {
+    blob,
+    filename: sanitizeName(filename),
+    mimeType: "application/pdf",
+    size: blob.size,
+  };
+}
+
+function parsePageNumbers(value: string, pageCount: number): number[] {
+  const result: number[] = [];
+  const parts = value.split(",").map((x) => x.trim()).filter(Boolean);
+  for (const part of parts) {
+    if (/^\d+$/.test(part)) {
+      const n = Number(part) - 1;
+      if (n < 0 || n >= pageCount) throw new PdfEngineError("PAGE_RANGE", `Page ${part} is outside the PDF page range.`);
+      result.push(n);
+    } else if (/^\d+\s*-\s*\d+$/.test(part)) {
+      const [aRaw, bRaw] = part.split("-").map((x) => Number(x.trim()));
+      const a = Math.min(aRaw, bRaw) - 1;
+      const b = Math.max(aRaw, bRaw) - 1;
+      if (a < 0 || b >= pageCount) throw new PdfEngineError("PAGE_RANGE", "One or more page ranges are outside the PDF.");
+      for (let i = a; i <= b; i++) result.push(i);
+    } else {
+      throw new PdfEngineError("PAGE_RANGE", `Invalid page selection: ${part}`);
+    }
+  }
+  return [...new Set(result)];
+}
+
+function hexColor(value = "#ef4444") {
+  const match = /^#?([0-9a-f]{6})$/i.exec(value.trim());
+  if (!match) return rgb(0.94, 0.27, 0.27);
+  const n = Number.parseInt(match[1], 16);
+  return rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+}
+
+function pagePoint(page: PDFPage, x: number, y: number) {
+  const { height } = page.getSize();
+  return { x, y: height - y };
+}
+
+function pageForIndex(pdf: PDFDocument, index: number) {
+  const page = pdf.getPage(index);
+  if (!page) throw new PdfEngineError("PAGE_RANGE", `Page ${index + 1} does not exist.`);
+  return page;
+}
+
+async function makePdfFromImage(file: File, signal?: AbortSignal, onProgress?: (p: PdfProgress) => void) {
+  assertNotAborted(signal);
+  if (file.size > MAX_INPUT_BYTES) throw new PdfEngineError("TOO_LARGE", "The image is too large for safe browser processing.");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const pdf = await PDFDocument.create();
+  let image;
+  const mime = file.type.toLowerCase();
+  if (mime === "image/jpeg" || /\.jpe?g$/i.test(file.name)) {
+    image = await pdf.embedJpg(bytes);
+  } else if (mime === "image/png" || /\.png$/i.test(file.name)) {
+    image = await pdf.embedPng(bytes);
+  } else if (mime === "image/webp" || /\.webp$/i.test(file.name) || mime === "image/bmp" || /\.bmp$/i.test(file.name)) {
+    image = await imageFileToPngBytes(file);
+    image = await pdf.embedPng(image);
+  } else if (mime === "image/tiff" || /\.tiff?$/i.test(file.name)) {
+    throw new PdfEngineError("UNSUPPORTED", "TIFF to PDF requires a browser TIFF decoder; the current dependency stack does not provide one safely.");
+  } else {
+    throw new PdfEngineError("UNSUPPORTED", "Unsupported image format.");
+  }
+  const dims = image.scale(1);
+  const page = pdf.addPage([dims.width, dims.height]);
+  page.drawImage(image, { x: 0, y: 0, width: dims.width, height: dims.height });
+  report(1, "PDF created", onProgress);
+  return savePdf(pdf, `${file.name.replace(/\.[^.]+$/, "")}.pdf`);
+}
+
+async function imageFileToPngBytes(file: File): Promise<Uint8Array> {
+  assertBrowser();
+  const bitmap = await createImageBitmap(file);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new PdfEngineError("BROWSER_UNSUPPORTED", "Canvas is unavailable in this browser.");
+    ctx.drawImage(bitmap, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new PdfEngineError("UNSUPPORTED", "The browser could not decode this image.");
+    return new Uint8Array(await blob.arrayBuffer());
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function imagesToPdf(files: File[], signal?: AbortSignal, onProgress?: (p: PdfProgress) => void) {
+  if (!files.length) throw new PdfEngineError("INVALID_INPUT", "Select at least one image.");
+  const pdf = await PDFDocument.create();
+  for (let i = 0; i < files.length; i++) {
+    assertNotAborted(signal);
+    const file = files[i];
+    if (file.size <= 0) throw new PdfEngineError("EMPTY_FILE", `${file.name} is empty.`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let image;
+    const mime = file.type.toLowerCase();
+    if (mime === "image/jpeg" || /\.jpe?g$/i.test(file.name)) image = await pdf.embedJpg(bytes);
+    else if (mime === "image/png" || /\.png$/i.test(file.name)) image = await pdf.embedPng(bytes);
+    else if (mime === "image/webp" || /\.webp$/i.test(file.name) || mime === "image/bmp" || /\.bmp$/i.test(file.name)) image = await pdf.embedPng(await imageFileToPngBytes(file));
+    else if (mime === "image/tiff" || /\.tiff?$/i.test(file.name)) throw new PdfEngineError("UNSUPPORTED", `TIFF is not supported by the current browser image decoder: ${file.name}`);
+    else throw new PdfEngineError("UNSUPPORTED", `Unsupported image format: ${file.name}`);
+    const dims = image.scale(1);
+    pdf.addPage([dims.width, dims.height]).drawImage(image, { x: 0, y: 0, width: dims.width, height: dims.height });
+    report((i + 1) / files.length, `Added ${file.name}`, onProgress);
+  }
+  return savePdf(pdf, "images-to-pdf.pdf");
+}
+
+async function copySelectedPages(
+  source: PDFDocument,
+  indices: number[],
+  signal?: AbortSignal,
+  onProgress?: (p: PdfProgress) => void,
+) {
+  if (!indices.length) throw new PdfEngineError("INVALID_OPTIONS", "Select at least one page.");
+  const out = await PDFDocument.create();
+  const pages = await out.copyPages(source, indices);
+  for (let i = 0; i < pages.length; i++) {
+    assertNotAborted(signal);
+    out.addPage(pages[i]);
+    report((i + 1) / pages.length, `Copying page ${i + 1} of ${pages.length}`, onProgress);
+  }
   return out;
 }
-function formInfo(pdf:PDFDocument){
-  const form=pdf.getForm();const fields=form.getFields();
-  return {hasForm:fields.length>0,hasXFA:form.hasXFA(),formFields:fields.map(f=>({name:f.getName(),type:f.constructor.name,options:(()=>{try{return (f as unknown as {getOptions?:()=>string[]}).getOptions?.()??[]}catch{return []}})()}))};
-}
-function metadata(pdf:PDFDocument){
-  const f=formInfo(pdf);return {pageCount:pdf.getPageCount(),title:pdf.getTitle()??"",author:pdf.getAuthor()??"",subject:pdf.getSubject()??"",keywords:pdf.getKeywords()??"",creator:pdf.getCreator()??"",producer:pdf.getProducer()??"",creationDate:pdf.getCreationDate()?.toISOString()??null,modificationDate:pdf.getModificationDate()?.toISOString()??null,encrypted:false,...f};
-}
-function clearMetadata(pdf:PDFDocument){
-  pdf.setTitle("");pdf.setAuthor("");pdf.setSubject("");pdf.setKeywords([]);pdf.setCreator("");pdf.setProducer("");
-  try{pdf.context.trailerInfo.Info=undefined;}catch{}
-}
-async function imagePng(file:File){
-  browser();if(file.size>MAX_IMAGE_INPUT_BYTES)throw new PdfEngineError("TOO_LARGE","Image must be 20 MB or smaller.");
-  const bmp=await createImageBitmap(file);try{
-    if(bmp.width*bmp.height>MAX_IMAGE_PIXELS)throw new PdfEngineError("MEMORY_RISK","Image dimensions are too large for safe browser processing.");
-    const c=document.createElement("canvas");c.width=bmp.width;c.height=bmp.height;const ctx=c.getContext("2d");if(!ctx)throw new PdfEngineError("BROWSER_UNSUPPORTED","Canvas is unavailable.");
-    ctx.drawImage(bmp,0,0);const b=await new Promise<Blob|null>(r=>c.toBlob(r,"image/png"));if(!b)throw new PdfEngineError("UNSUPPORTED","The browser could not decode this image.");return new Uint8Array(await b.arrayBuffer());
-  }finally{bmp.close();}
-}
-async function imageToPdf(file:File,signal?:AbortSignal,cb?:(p:PdfProgress)=>void){
-  abort(signal);if(!file||file.size<=0)throw new PdfEngineError("EMPTY_FILE","The image is empty.");if(file.size>MAX_IMAGE_INPUT_BYTES)throw new PdfEngineError("TOO_LARGE","Image must be 20 MB or smaller.");
-  const pdf=await PDFDocument.create();const mime=file.type.toLowerCase();let img;
-  const raw=await file.arrayBuffer();
-  if(mime==="image/jpeg"||/\.jpe?g$/i.test(file.name))img=await pdf.embedJpg(new Uint8Array(raw));
-  else if(mime==="image/png"||/\.png$/i.test(file.name))img=await pdf.embedPng(new Uint8Array(raw));
-  else if(mime==="image/webp"||mime==="image/bmp"||/\.webp$/i.test(file.name)||/\.bmp$/i.test(file.name))img=await pdf.embedPng(await imagePng(file));
-  else throw new PdfEngineError("UNSUPPORTED","TIFF is not supported in this browser-only build. Please convert TIFF to PNG/JPG first.");
-  const d=img.scale(1);const pw=595.28,ph=841.89,m=36;const s=Math.min((pw-2*m)/d.width,(ph-2*m)/d.height,1);const w=d.width*s,h=d.height*s;
-  pdf.addPage([pw,ph]).drawImage(img,{x:(pw-w)/2,y:(ph-h)/2,width:w,height:h});progress(1,"PDF created",cb);return save(pdf,`${base(file.name)}.pdf`,signal);
-}
-async function imagesToPdf(files:File[],signal?:AbortSignal,cb?:(p:PdfProgress)=>void){
-  if(!files.length)throw new PdfEngineError("INVALID_INPUT","Select at least one image.");
-  const total=files.reduce((s,f)=>s+f.size,0);if(total>MAX_MERGE_BYTES)throw new PdfEngineError("TOO_LARGE","Combined image input exceeds 256 MB.");
-  const pdf=await PDFDocument.create();
-  for(let i=0;i<files.length;i++){abort(signal);const f=files[i];if(f.size>MAX_IMAGE_INPUT_BYTES)throw new PdfEngineError("TOO_LARGE",`${f.name} exceeds the 20 MB per-image limit.`);const mime=f.type.toLowerCase();let img;
-    if(mime==="image/jpeg"||/\.jpe?g$/i.test(f.name))img=await pdf.embedJpg(new Uint8Array(await f.arrayBuffer()));
-    else if(mime==="image/png"||/\.png$/i.test(f.name))img=await pdf.embedPng(new Uint8Array(await f.arrayBuffer()));
-    else if(mime==="image/webp"||mime==="image/bmp"||/\.webp$/i.test(f.name)||/\.bmp$/i.test(f.name))img=await pdf.embedPng(await imagePng(f));
-    else throw new PdfEngineError("UNSUPPORTED",`${f.name}: TIFF and this image format are not supported.`);
-    const d=img.scale(1);const pw=595.28,ph=841.89,m=36,s=Math.min((pw-2*m)/d.width,(ph-2*m)/d.height,1);const w=d.width*s,h=d.height*s;
-    pdf.addPage([pw,ph]).drawImage(img,{x:(pw-w)/2,y:(ph-h)/2,width:w,height:h});progress((i+1)/files.length,`Added ${f.name}`,cb);
-  }return save(pdf,"images-to-pdf.pdf",signal);
-}
-async function drawNumbers(pdf:PDFDocument,start:number,pos:PdfProcessOptions["pageNumberPosition"],c:ReturnType<typeof rgb>,ids:number[]){
-  const font=await pdf.embedFont(StandardFonts.Helvetica);ids.forEach((idx,n)=>{const p=page(pdf,idx),w=p.getWidth(),h=p.getHeight(),s=10,t=String(start+n),tw=font.widthOfTextAtSize(t,s);let x=24,y=h-24;if(pos?.includes("center"))x=(w-tw)/2;if(pos?.includes("right"))x=w-tw-24;if(pos?.includes("bottom"))y=14;p.drawText(t,{x,y,size:s,font,color:c});});
-}
-async function annotate(file:File,id:PdfToolId,o:PdfProcessOptions,signal?:AbortSignal,cb?:(p:PdfProgress)=>void){
-  const pdf=await load(file,signal);const ids=validatePages(o.pages??[],pdf.getPageCount());const c=color(o.color),font=await pdf.embedFont(StandardFonts.Helvetica);const fs=Math.max(6,Math.min(96,o.fontSize??18)),op=Math.max(.05,Math.min(1,o.opacity??.35));
-  for(let n=0;n<ids.length;n++){abort(signal);const p=page(pdf,ids[n]),{width,height}=p.getSize(),pt=point(p,o.x??40,o.y??40);
-    if(id==="pdf-watermark")p.drawText(o.watermarkText||"WORKABHI",{x:pt.x,y:pt.y,size:fs,font,color:c,opacity:op,rotate:degrees(-35)});
-    else if(id==="pdf-stamp"){const t=o.stampText||"APPROVED";p.drawRectangle({x:pt.x-8,y:pt.y-8,width:Math.max(80,t.length*fs*.6),height:fs+16,borderColor:c,borderWidth:1.5,color:rgb(1,1,1),opacity:.15});p.drawText(t,{x:pt.x,y:pt.y,size:fs,font,color:c});}
-    else if(id==="add-text-to-pdf")p.drawText(o.text||"Text",{x:pt.x,y:pt.y,size:fs,font,color:c});
-    else if(id==="pdf-highlight-tool"){const w=Math.min(width-pt.x,Math.max(20,o.whiteout?.width??180)),h=Math.min(pt.y,Math.max(10,o.whiteout?.height??24));p.drawRectangle({x:pt.x,y:pt.y-h,width:w,height:h,color:rgb(1,.85,.05),opacity:.32});}
-    else if(id==="pdf-whiteout-tool"){const w=Math.min(width-pt.x,Math.max(20,o.whiteout?.width??180)),h=Math.min(pt.y,Math.max(20,o.whiteout?.height??40));p.drawRectangle({x:pt.x,y:pt.y-h,width:w,height:h,color:rgb(1,1,1),opacity:1});}
-    else if(id==="pdf-drawing-tool"){for(const l of o.drawing??[]){const a=point(p,l.x1,l.y1),b=point(p,l.x2,l.y2);p.drawLine({start:a,end:b,thickness:Math.max(1,fs/5),color:c,opacity:op});}}
-    else if(id==="pdf-annotation-tool"){p.drawRectangle({x:pt.x,y:pt.y,width:180,height:60,borderColor:c,borderWidth:1,color:rgb(1,1,.8),opacity:.85});p.drawText(o.text||"Annotation",{x:pt.x+8,y:pt.y+40,size:Math.min(fs,14),font,color:c});}
-    else if(id==="add-image-to-pdf"||id==="add-signature-to-pdf"){
-      const b=id==="add-image-to-pdf"?o.imageBytes:o.signatureBytes;if(!b)throw new PdfEngineError("INVALID_OPTIONS",`Choose an image before processing.`);
-      const im=await pdf.embedPng(b);const scale=Math.max(.05,Math.min(1,(o.imageScale??35)/100));let w=im.width*scale,h=im.height*scale;const margin=Math.max(0,o.imageMargin??24);
-      if(id==="add-signature-to-pdf"){const cap=240;const s=Math.min(scale,cap/im.width);w=im.width*s;h=im.height*s;}
-      const pos=o.imagePosition??"center";let x=margin,y=margin;
-      if(pos.includes("top"))y=height-margin-h;else if(pos.includes("center"))y=(height-h)/2;
-      if(pos.includes("right"))x=width-margin-w;else if(pos.includes("center"))x=(width-w)/2;
-      if(Number.isFinite(o.imageX))x=Math.max(0,Math.min(width-w,o.imageX!));if(Number.isFinite(o.imageY))y=Math.max(0,Math.min(height-h,o.imageY!));
-      p.drawImage(im,{x,y,width:w,height:h,opacity:id==="add-image-to-pdf"?Math.max(0,Math.min(1,(o.imageOpacity??100)/100)):op});
-    }
-    progress((n+1)/ids.length,`Editing page ${ids[n]+1}`,cb);
-  }return save(pdf,`${base(file.name)}-edited.pdf`,signal);
-}
-async function fill(file:File,o:PdfProcessOptions,mode:"text"|"checkbox"|"radio",flatten=false){
-  const pdf=await load(file),form=pdf.getForm(),fields=form.getFields();if(!fields.length){if(flatten)return save(pdf,`${base(file.name)}-flattened.pdf`);throw new PdfEngineError("UNSUPPORTED","No standard AcroForm fields were found. XFA-only forms are not supported.");}
-  const vals=o.formValues??o.formFieldValues??{};let changed=0;
-  for(const f of fields){const name=f.getName(),v=vals[name];if(v===undefined)continue;try{
-    if(mode==="text")form.getTextField(name).setText(String(v));
-    else if(mode==="checkbox"){const x=form.getCheckBox(name);Boolean(v)?x.check():x.uncheck();}
-    else form.getRadioGroup(name).select(String(v));changed++;
-  }catch{}}
-  if(flatten)form.flatten();return save(pdf,`${base(file.name)}-${changed?"filled":"processed"}.pdf`);
-}
-async function toImages(file:File,o:PdfProcessOptions,signal?:AbortSignal,cb?:(p:PdfProgress)=>void){
-  browser();ensurePdf(file);const ids=o.pageIndices?.length?validatePages(o.pageIndices,MAX_PAGES):undefined;const scale=Math.max(.25,Math.min(2,o.renderScale??1));
-  const data=await bytes(file);abort(signal);const pdfjs=await import("pdfjs-dist/legacy/build/pdf.mjs");pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs",import.meta.url).toString();
-  const doc=await pdfjs.getDocument({data}).promise;const count=doc.numPages;if(count>MAX_PAGES)throw new PdfEngineError("MEMORY_RISK",`PDF exceeds ${MAX_PAGES} pages.`);const targets=ids??Array.from({length:count},(_,i)=>i);
-  if(!ids&&targets.length>50)throw new PdfEngineError("MEMORY_RISK","For PDFs over 50 pages, select the pages to export.");
-  const out:NonNullable<PdfOutput["images"]>=[];try{
-    for(let n=0;n<targets.length;n++){abort(signal);const idx=targets[n];if(idx>=count)throw new PdfEngineError("PAGE_RANGE","Page is outside the PDF.");const p=await doc.getPage(idx+1);const vp=p.getViewport({scale});const pixels=vp.width*vp.height;if(pixels>MAX_RENDER_PIXELS){p.cleanup();throw new PdfEngineError("MEMORY_RISK","That page is too large to render safely.");}
-      const c=document.createElement("canvas");c.width=Math.ceil(vp.width);c.height=Math.ceil(vp.height);const ctx=c.getContext("2d");if(!ctx){p.cleanup();throw new PdfEngineError("BROWSER_UNSUPPORTED","Canvas is unavailable.");}
-      const task=p.render({canvasContext:ctx,canvas:c,viewport:vp});const cancel=()=>task.cancel();signal?.addEventListener("abort",cancel,{once:true});try{await task.promise;abort(signal);const mime=o.imageMimeType??"image/png";const b=await new Promise<Blob|null>(r=>c.toBlob(r,mime,mime==="image/jpeg"?.92:undefined));if(!b)throw new PdfEngineError("UNSUPPORTED","Could not encode rendered page.");out.push({blob:b,filename:`page-${idx+1}.${mime==="image/jpeg"?"jpg":mime==="image/webp"?"webp":"png"}`,pageIndex:idx});progress((n+1)/targets.length,`Rendered page ${idx+1}`,cb);}finally{signal?.removeEventListener("abort",cancel);p.cleanup();c.width=1;c.height=1;}}
-    return {images:out};
-  }finally{try{await doc.cleanup();}catch{}}
-}
-async function security(file:File){
-  browser();ensurePdf(file);const data=await bytes(file);const pdfjs=await import("pdfjs-dist/legacy/build/pdf.mjs");pdfjs.GlobalWorkerOptions.workerSrc=new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs",import.meta.url).toString();const d=await pdfjs.getDocument({data}).promise;
-  try{
-    const attachments=await d.getAttachments?.();const js=await d.hasJSActions?.();const sigs=await d.getSignatures?.();const permissions=await d.getPermissions?.();
-    return {javascriptActions:Boolean(js),attachmentNames:attachments?Object.keys(attachments):[],signatureCount:Array.isArray(sigs)?sigs.length:0,permissions:permissions??null};
-  }finally{try{await d.cleanup();}catch{}}
-}
-export async function inspectPdf(file:File){const pdf=await load(file);return metadata(pdf);}
 
-async function textToPdf(text:string,signal?:AbortSignal,cb?:(p:PdfProgress)=>void){
-  browser();
-  if(!text.trim()) throw new PdfEngineError("INVALID_OPTIONS","Enter some text before creating the PDF.");
-  const pdf=await PDFDocument.create();
-  const font=await pdf.embedFont(StandardFonts.Helvetica);
-  const width=595.28,height=841.89,margin=50,size=12,lineHeight=18,maxWidth=width-margin*2;
-  const wrap=(value:string)=>{
-    const result:string[]=[]; let current="";
-    for(const word of value.split(/\s+/)){
-      const candidate=current?`${current} ${word}`:word;
-      if(font.widthOfTextAtSize(candidate,size)<=maxWidth){current=candidate;continue;}
-      if(current)result.push(current);
-      if(font.widthOfTextAtSize(word,size)<=maxWidth){current=word;continue;}
-      let chunk="";
-      for(const ch of word){
-        const next=chunk+ch;
-        if(font.widthOfTextAtSize(next,size)>maxWidth&&chunk){result.push(chunk);chunk=ch;}else chunk=next;
-      }
-      current=chunk;
-    }
-    if(current||!result.length)result.push(current);
-    return result;
+function metadata(pdf: PDFDocument) {
+  return {
+    pageCount: pdf.getPageCount(),
+    title: pdf.getTitle() ?? "",
+    author: pdf.getAuthor() ?? "",
+    subject: pdf.getSubject() ?? "",
+    keywords: pdf.getKeywords() ?? "",
+    creator: pdf.getCreator() ?? "",
+    producer: pdf.getProducer() ?? "",
+    creationDate: pdf.getCreationDate()?.toISOString() ?? null,
+    modificationDate: pdf.getModificationDate()?.toISOString() ?? null,
+    encrypted: pdf.isEncrypted,
+    hasForm: pdf.getForm().getFields().length > 0,
+    hasXFA: pdf.getForm().hasXFA(),
   };
-  let page=pdf.addPage([width,height]),y=height-margin;
-  const lines=text.replace(/\r\n/g,"\n").split("\n").flatMap(wrap);
-  for(let i=0;i<lines.length;i++){
-    abort(signal);
-    if(y<margin){page=pdf.addPage([width,height]);y=height-margin;}
-    page.drawText(lines[i],{x:margin,y,size,font,color:rgb(.12,.12,.12),maxWidth});
-    y-=lineHeight;
-    if(i%25===0)progress(i/Math.max(1,lines.length),"Creating PDF",cb);
-  }
-  progress(1,"PDF created",cb);
-  return save(pdf,"text-to-pdf.pdf",signal);
 }
 
-async function mergePdfs(files:File[],signal?:AbortSignal,cb?:(p:PdfProgress)=>void){
-  if(files.length<2)throw new PdfEngineError("INVALID_INPUT","Select at least two PDF files to merge.");
-  const total=files.reduce((s,f)=>s+f.size,0);
-  if(total>MAX_MERGE_BYTES)throw new PdfEngineError("TOO_LARGE","Combined PDF input exceeds the 256 MB browser safety limit.");
-  const out=await PDFDocument.create();
-  for(let i=0;i<files.length;i++){
-    abort(signal);
-    const src=await load(files[i],signal);
-    const copied=await out.copyPages(src,src.getPageIndices());
-    for(const p of copied){abort(signal);out.addPage(p);}
-    progress((i+1)/files.length,`Merged ${i+1} of ${files.length} PDFs`,cb);
-  }
-  return save(out,"merged.pdf",signal);
+function clearMetadata(pdf: PDFDocument) {
+  pdf.setTitle("");
+  pdf.setAuthor("");
+  pdf.setSubject("");
+  pdf.setKeywords([]);
+  pdf.setCreator("");
+  pdf.setProducer("");
+  // pdf-lib exposes setters but no public "clear date" API.
+  // Normalize these dates instead of pretending they can be removed safely.
+  pdf.setCreationDate(new Date(0));
+  pdf.setModificationDate(new Date(0));
 }
 
-export async function processPdf(id:PdfToolId,files:File[],o:PdfProcessOptions={},signal?:AbortSignal,cb?:(p:PdfProgress)=>void):Promise<PdfOutput>{
-  browser();abort(signal);
-  if(id==="pdf-password-generator"){const len=Math.max(8,Math.min(128,Math.floor(o.passwordLength??24))),alphabet="ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*_-+=",v=new Uint32Array(len);crypto.getRandomValues(v);return{text:[...v].map(x=>alphabet[x%alphabet.length]).join("")};}
-  if(!files.length)throw new PdfEngineError("INVALID_INPUT","Select a file first.");
-  if(id==="text-to-pdf")return textToPdf(o.text??"",signal,cb);
-  if(id==="merge-pdf")return mergePdfs(files,signal,cb);
-  if(id==="jpg-to-pdf"||id==="png-to-pdf"||id==="webp-to-pdf"||id==="bmp-to-pdf"||id==="tiff-to-pdf")return imageToPdf(files[0],signal,cb);
-  if(id==="images-to-pdf")return imagesToPdf(files,signal,cb);
-  if(id==="pdf-to-jpg"||id==="pdf-to-png"||id==="pdf-to-webp"||id==="pdf-to-images"||id==="pdf-pages-to-images")return toImages(files[0],{...o,imageMimeType:id==="pdf-to-jpg"?"image/jpeg":id==="pdf-to-webp"?"image/webp":"image/png"},signal,cb);
-  if(id==="pdf-hash-generator"){ensurePdf(files[0]);const d=await crypto.subtle.digest(o.hashAlgorithm??"SHA-256",await files[0].arrayBuffer());return{text:`${o.hashAlgorithm??"SHA-256"}: ${[...new Uint8Array(d)].map(b=>b.toString(16).padStart(2,"0")).join("")}`};}
-  if(id==="pdf-file-integrity-checker"){ensurePdf(files[0]);const b=await bytes(files[0]);const head=new TextDecoder().decode(b.slice(0,8));const tail=new TextDecoder().decode(b.slice(-64));let parsed=false;try{await load(files[0]);parsed=true;}catch{}return{text:JSON.stringify({fileName:files[0].name,bytes:files[0].size,headerLooksValid:head.startsWith("%PDF-"),eofMarkerPresent:tail.includes("%%EOF"),startXrefMarkerPresent:new TextDecoder().decode(b.slice(Math.max(0,b.length-4096))).includes("startxref"),parserOpenedDocument:parsed,verdict:parsed?"Basic structural checks passed":"The PDF failed parser validation"},null,2)};}
-  if(id==="pdf-security-checker"){const info=await inspectPdf(files[0]),sec=await security(files[0]);return{metadata:{...info,...sec},text:JSON.stringify({...info,...sec,note:"Parser-level inspection only; this is not malware scanning or a complete PDF security audit."},null,2)};}
-  if(id==="pdf-metadata-viewer")return{metadata:await inspectPdf(files[0])};
-  if(id==="pdf-viewer"){ensurePdf(files[0]);return{blob:files[0],filename:files[0].name,mimeType:"application/pdf",size:files[0].size};}
-  if(id==="remove-pdf-metadata"||id==="pdf-metadata-cleaner"||id==="pdf-privacy-cleaner"){const pdf=await load(files[0],signal);clearMetadata(pdf);return save(pdf,`${base(files[0].name)}-clean.pdf`,signal);}
-  if(id==="pdf-form-filler")return fill(files[0],o,"text");
-  if(id==="pdf-checkbox-filler")return fill(files[0],o,"checkbox");
-  if(id==="pdf-radio-button-filler")return fill(files[0],o,"radio");
-  if(id==="pdf-flatten-tool")return fill(files[0],o,"text",true);
-  const pdf=await load(files[0],signal),count=pdf.getPageCount(),all=Array.from({length:count},(_,i)=>i);
-  if(id==="pdf-page-numbering"){const ids=o.pages?.length?validatePages(o.pages,count):all;await drawNumbers(pdf,o.pageNumberStart??1,o.pageNumberPosition??"bottom-center",color(o.color),ids);return save(pdf,`${base(files[0].name)}-numbered.pdf`,signal);}
-  if(["rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages","duplicate-pdf-pages","reverse-pdf-pages","split-pdf","pdf-page-organizer"].includes(id)){
-    let ids=o.pages?.length?validatePages(o.pages,count):[];if(id!=="split-pdf"&&!ids.length&&id!=="delete-pdf-pages")throw new PdfEngineError("INVALID_OPTIONS","Select pages first.");
-    if(id==="delete-pdf-pages"){ids=all.filter(i=>!ids.includes(i));if(!ids.length)throw new PdfEngineError("INVALID_OPTIONS","You cannot delete every page.");}
-    else if(id==="rotate-pdf"){for(const i of ids)page(pdf,i).setRotation(degrees(o.rotate??90));return save(pdf,`${base(files[0].name)}-rotated.pdf`,signal);}
-    else if(id==="reorder-pdf-pages"||id==="pdf-page-organizer"){const order=o.pageOrder??[];if(order.length!==count||new Set(order).size!==count)throw new PdfEngineError("INVALID_OPTIONS","Page order must contain every page exactly once.");ids=validatePages(order,count);}
-    else if(id==="duplicate-pdf-pages"){const idx=o.duplicatePage??ids[0];if(idx===undefined)throw new PdfEngineError("INVALID_OPTIONS","Select a page to duplicate.");const pos=Math.max(0,Math.min(count,Math.floor(o.duplicatePosition??idx+1)));ids=all.slice();ids.splice(pos,0,idx);}
-    else if(id==="reverse-pdf-pages")ids=[...ids].reverse();
-    if(id==="split-pdf"){const groups=o.pageGroups?.length?o.pageGroups:o.pages?.length?[o.pages]:all.map(i=>[i]);const outputs:PdfOutput[]=[];for(let i=0;i<groups.length;i++){const s=await copyPages(pdf,groups[i],signal,cb);outputs.push(await save(s,`${base(files[0].name)}-split-${i+1}.pdf`,signal));}return outputs.length===1?outputs[0]:{outputs};}
-    const out=await copyPages(pdf,ids,signal,cb);return save(out,`${base(files[0].name)}-pages.pdf`,signal);
+async function drawPageNumbers(
+  pdf: PDFDocument,
+  start: number,
+  position: PdfProcessOptions["pageNumberPosition"],
+  color: ReturnType<typeof rgb>,
+  pageIndices?: number[],
+) {
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const indices = pageIndices?.length ? pageIndices : pdf.getPages().map((_, index) => index);
+  indices.forEach((pageIndex, numberIndex) => {
+    const page = pdf.getPages()[pageIndex];
+    if (!page) return;
+    const { width, height } = page.getSize();
+    const label = String(start + numberIndex);
+    const size = 10;
+    const textWidth = font.widthOfTextAtSize(label, size);
+    let x = 24;
+    let y = height - 24;
+    if (position?.includes("center")) x = (width - textWidth) / 2;
+    if (position?.includes("right")) x = width - textWidth - 24;
+    if (position?.includes("bottom")) y = 14;
+    page.drawText(label, { x, y, size, font, color });
+  });
+}
+
+async function annotatePdf(
+  file: File,
+  toolId: PdfToolId,
+  options: PdfProcessOptions,
+  signal?: AbortSignal,
+  onProgress?: (p: PdfProgress) => void,
+): Promise<PdfOutput> {
+  const pdf = await loadPdf(file);
+  const pages = pdf.getPages();
+  const selected = options.pages?.length ? options.pages : [0];
+  const color = hexColor(options.color);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const size = Math.max(6, Math.min(96, options.fontSize ?? 18));
+  const opacity = Math.max(0.05, Math.min(1, options.opacity ?? 0.35));
+
+  for (let i = 0; i < selected.length; i++) {
+    assertNotAborted(signal);
+    const page = pageForIndex(pdf, selected[i]);
+    const { width, height } = page.getSize();
+    const point = pagePoint(page, Math.max(0, options.x ?? 40), Math.max(0, options.y ?? 40));
+
+    if (toolId === "pdf-watermark") {
+      page.drawText(options.watermarkText || "WORKABHI", {
+        x: point.x,
+        y: point.y,
+        size,
+        font,
+        color,
+        opacity,
+        rotate: degrees(-35),
+      });
+    } else if (toolId === "pdf-stamp") {
+      const stamp = options.stampText || "APPROVED";
+      page.drawRectangle({ x: point.x - 8, y: point.y - 8, width: Math.max(80, stamp.length * size * 0.6), height: size + 16, borderColor: color, borderWidth: 1.5, color: rgb(1, 1, 1), opacity: 0.15 });
+      page.drawText(stamp, { x: point.x, y: point.y, size, font, color });
+    } else if (toolId === "add-text-to-pdf") {
+      page.drawText(options.text || "Text", { x: point.x, y: point.y, size, font, color });
+    } else if (toolId === "pdf-highlight-tool") {
+      const w = Math.min(width - point.x, Math.max(40, options.whiteout?.width ?? 180));
+      const h = Math.min(height - point.y, Math.max(12, options.whiteout?.height ?? 24));
+      page.drawRectangle({ x: point.x, y: point.y, width: w, height: h, color: rgb(1, 0.85, 0.05), opacity: 0.32 });
+    } else if (toolId === "pdf-whiteout-tool") {
+      const w = Math.min(width - point.x, Math.max(20, options.whiteout?.width ?? 180));
+      const h = Math.min(height - point.y, Math.max(20, options.whiteout?.height ?? 40));
+      page.drawRectangle({ x: point.x, y: point.y, width: w, height: h, color: rgb(1, 1, 1), opacity: 1 });
+    } else if (toolId === "pdf-drawing-tool") {
+      for (const line of options.drawing ?? []) {
+        const a = pagePoint(page, line.x1, line.y1);
+        const b = pagePoint(page, line.x2, line.y2);
+        page.drawLine({ start: a, end: b, thickness: Math.max(1, size / 5), color, opacity });
+      }
+    } else if (toolId === "pdf-annotation-tool") {
+      page.drawRectangle({ x: point.x, y: point.y, width: 180, height: 60, borderColor: color, borderWidth: 1, color: rgb(1, 1, 0.8), opacity: 0.85 });
+      page.drawText(options.text || "Annotation", { x: point.x + 8, y: point.y + 40, size: Math.min(size, 14), font, color });
+    } else if (toolId === "pdf-page-numbering") {
+      await drawPageNumbers(pdf, options.pageNumberStart ?? 1, options.pageNumberPosition ?? "bottom-center", color);
+      break;
+    } else if (toolId === "add-image-to-pdf") {
+      if (!options.imageBytes) {
+        throw new PdfEngineError(
+          "INVALID_OPTIONS",
+          "No image was provided.",
+        );
+      }
+
+      const image = await pdf.embedPng(
+        options.imageBytes,
+      );
+
+      const position =
+        options.imagePosition ?? "center";
+
+      const scale = Math.max(
+        5,
+        Math.min(100, options.imageScale ?? 35),
+      );
+
+      const imageOpacity = Math.max(
+        0,
+        Math.min(1, (options.imageOpacity ?? 100) / 100),
+      );
+
+      const margin = Math.max(
+        0,
+        options.imageMargin ?? 24,
+      );
+
+      const keepAspectRatio =
+        options.imageKeepAspectRatio ?? true;
+
+      const pageWidth = page.getWidth();
+      const pageHeight = page.getHeight();
+
+      let imageWidth = Math.max(1, (pageWidth * scale) / 100);
+      let imageHeight = keepAspectRatio
+        ? imageWidth * (image.height / image.width)
+        : imageWidth;
+
+      const maxWidth = Math.max(1, pageWidth - margin * 2);
+      const maxHeight = Math.max(1, pageHeight - margin * 2);
+      const fitScale = Math.min(1, maxWidth / imageWidth, maxHeight / imageHeight);
+
+      imageWidth *= fitScale;
+      imageHeight *= fitScale;
+
+      let x = margin;
+      let y = margin;
+
+      switch (position) {
+        case "top-left":
+          x = margin;
+          y = pageHeight - margin - imageHeight;
+          break;
+        case "top-center":
+          x = (pageWidth - imageWidth) / 2;
+          y = pageHeight - margin - imageHeight;
+          break;
+        case "top-right":
+          x = pageWidth - margin - imageWidth;
+          y = pageHeight - margin - imageHeight;
+          break;
+        case "center-left":
+          x = margin;
+          y = (pageHeight - imageHeight) / 2;
+          break;
+        case "center":
+          x = (pageWidth - imageWidth) / 2;
+          y = (pageHeight - imageHeight) / 2;
+          break;
+        case "center-right":
+          x = pageWidth - margin - imageWidth;
+          y = (pageHeight - imageHeight) / 2;
+          break;
+        case "bottom-left":
+          x = margin;
+          y = margin;
+          break;
+        case "bottom-center":
+          x = (pageWidth - imageWidth) / 2;
+          y = margin;
+          break;
+        case "bottom-right":
+          x = pageWidth - margin - imageWidth;
+          y = margin;
+          break;
+      }
+
+      if (Number.isFinite(options.imageX)) {
+        x = Math.max(0, Math.min(pageWidth - imageWidth, options.imageX!));
+      }
+
+      if (Number.isFinite(options.imageY)) {
+        y = Math.max(0, Math.min(pageHeight - imageHeight, options.imageY!));
+      }
+
+      page.drawImage(image, {
+        x,
+        y,
+        width: imageWidth,
+        height: imageHeight,
+        opacity: imageOpacity,
+      });
+    } else if (toolId === "add-signature-to-pdf") {
+      if (!options.signatureBytes) {
+        throw new PdfEngineError(
+          "INVALID_OPTIONS",
+          "No signature image was provided.",
+        );
+      }
+
+      const signature = await pdf.embedPng(options.signatureBytes);
+      const dims = signature.scale(Math.min(1, 240 / signature.width));
+      page.drawImage(signature, {
+        x: point.x,
+        y: point.y,
+        width: dims.width,
+        height: dims.height,
+        opacity,
+      });
+    }
+    report((i + 1) / selected.length, `Editing page ${selected[i] + 1}`, onProgress);
   }
-  if(["pdf-watermark","pdf-stamp","add-text-to-pdf","add-image-to-pdf","add-signature-to-pdf","pdf-highlight-tool","pdf-drawing-tool","pdf-annotation-tool","pdf-whiteout-tool"].includes(id))return annotate(files[0],id,o,signal,cb);
-  throw new PdfEngineError("UNSUPPORTED",`The PDF tool "${id}" is not supported by this browser engine.`);
+  return savePdf(pdf, `${file.name.replace(/\.pdf$/i, "")}-edited.pdf`);
+}
+
+async function fillForm(file: File, options: PdfProcessOptions, mode: "text" | "checkbox" | "radio", flatten = false) {
+  const pdf = await loadPdf(file);
+  const form = pdf.getForm();
+  const fields = form.getFields();
+  if (!fields.length) throw new PdfEngineError("UNSUPPORTED", "This PDF does not contain standard AcroForm fields. XFA forms are not supported.");
+  const values = options.formValues ?? {};
+  for (const field of fields) {
+    const name = field.getName();
+    const value = values[name];
+    if (value === undefined) continue;
+    try {
+      if (mode === "text") form.getTextField(name).setText(String(value));
+      else if (mode === "checkbox") {
+        const checkbox = form.getCheckBox(name);
+        if (Boolean(value)) checkbox.check(); else checkbox.uncheck();
+      } else if (mode === "radio") {
+        form.getRadioGroup(name).select(String(value));
+      }
+    } catch {
+      // A field of a different type is left unchanged rather than corrupting the document.
+    }
+  }
+  if (flatten) form.flatten();
+  return savePdf(pdf, `${file.name.replace(/\.pdf$/i, "")}-filled.pdf`);
+}
+
+async function pdfToImages(
+  file: File,
+  options: PdfProcessOptions,
+  signal?: AbortSignal,
+  onProgress?: (p: PdfProgress) => void,
+): Promise<PdfOutput> {
+  assertBrowser();
+  const scale = Math.max(0.25, Math.min(2, options.renderScale ?? 1));
+  const indices = options.pageIndices?.length ? options.pageIndices : Array.from({ length: Math.min(MAX_PAGES, 50) }, (_, i) => i);
+  const pdfBytes = new Uint8Array(await file.arrayBuffer());
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
+  const doc = await pdfjs.getDocument({ data: pdfBytes }).promise;
+  const outputImages: PdfOutput["images"] = [];
+  try {
+    const pageCount = doc.numPages;
+    const selected = indices.filter((i) => i >= 0 && i < pageCount);
+    if (!selected.length) throw new PdfEngineError("PAGE_RANGE", "No valid PDF pages were selected.");
+    for (let n = 0; n < selected.length; n++) {
+      assertNotAborted(signal);
+      const page = await doc.getPage(selected[n] + 1);
+      const viewport = page.getViewport({ scale });
+      const pixels = viewport.width * viewport.height;
+      if (pixels > MAX_RENDER_PIXELS) throw new PdfEngineError("MEMORY_RISK", "This page is too large to render safely. Reduce the render scale.");
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const ctx = canvas.getContext("2d", { alpha: false });
+      if (!ctx) throw new PdfEngineError("BROWSER_UNSUPPORTED", "Canvas is unavailable in this browser.");
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+      const mime = options.imageMimeType ?? "image/png";
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, mime, 0.92));
+      if (!blob) throw new PdfEngineError("UNSUPPORTED", "The browser could not encode the rendered page.");
+      outputImages!.push({ blob, filename: `page-${selected[n] + 1}.${mime === "image/jpeg" ? "jpg" : mime === "image/webp" ? "webp" : "png"}`, pageIndex: selected[n] });
+      canvas.width = 1;
+      canvas.height = 1;
+      report((n + 1) / selected.length, `Rendered page ${selected[n] + 1} of ${selected.length}`, onProgress);
+    }
+  } finally {
+    await doc.cleanup();
+  }
+  return { images: outputImages };
+}
+
+export async function inspectPdf(file: File): Promise<Record<string, unknown>> {
+  const pdf = await loadPdf(file);
+  return {
+    ...metadata(pdf),
+    fileName: file.name,
+    fileSize: file.size,
+    mimeType: file.type || "application/pdf",
+  };
+}
+
+export async function processPdf(
+  toolId: PdfToolId,
+  files: File[],
+  options: PdfProcessOptions = {},
+  signal?: AbortSignal,
+  onProgress?: (progress: PdfProgress) => void,
+): Promise<PdfOutput> {
+  assertBrowser();
+  assertNotAborted(signal);
+
+  if (toolId === "pdf-password-generator") {
+    const length = Math.max(8, Math.min(128, Math.floor(options.passwordLength ?? 24)));
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*_-+=";
+    const values = new Uint32Array(length);
+    crypto.getRandomValues(values);
+    let password = "";
+    for (const value of values) password += alphabet[value % alphabet.length];
+    return { text: password };
+  }
+
+  if (toolId === "text-to-pdf") {
+    const text = options.text ?? "";
+    if (!text.trim()) throw new PdfEngineError("INVALID_OPTIONS", "Enter some text before creating the PDF.");
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    const lines = text.replace(/\r\n/g, "\n").split("\n");
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    let page = pdf.addPage([pageWidth, pageHeight]);
+    let y = pageHeight - 50;
+    for (const line of lines) {
+      if (y < 50) {
+        page = pdf.addPage([pageWidth, pageHeight]);
+        y = pageHeight - 50;
+      }
+      page.drawText(line.slice(0, 180), { x: 50, y, size: 12, font, color: rgb(0.12, 0.12, 0.12) });
+      y -= 18;
+    }
+    return savePdf(pdf, "text-to-pdf.pdf");
+  }
+
+  if (toolId === "pdf-hash-generator") {
+    const file = files[0];
+    ensurePdfFile(file);
+    const data = await file.arrayBuffer();
+    const algorithm = options.hashAlgorithm ?? "SHA-256";
+    const digest = await crypto.subtle.digest(algorithm, data);
+    const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    return { text: `${algorithm}: ${hex}` };
+  }
+
+  if (toolId === "pdf-file-integrity-checker") {
+    const file = files[0];
+    ensurePdfFile(file);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const head = new TextDecoder().decode(bytes.slice(0, 8));
+    const tail = new TextDecoder().decode(bytes.slice(Math.max(0, bytes.length - 64)));
+    let parsed = false;
+    let pageCount = 0;
+    try {
+      const pdf = await loadPdf(file);
+      parsed = true;
+      pageCount = pdf.getPageCount();
+    } catch {
+      parsed = false;
+    }
+    return {
+      text: JSON.stringify({
+        fileName: file.name,
+        bytes: file.size,
+        headerLooksValid: head.startsWith("%PDF-"),
+        eofMarkerPresent: tail.includes("%%EOF"),
+        parserOpenedDocument: parsed,
+        pageCount,
+        verdict: parsed && head.startsWith("%PDF-") ? "Basic structural checks passed" : "The file failed one or more basic structural checks",
+      }, null, 2),
+    };
+  }
+
+  if (toolId === "pdf-security-checker") {
+    const info = await inspectPdf(files[0]);
+    return {
+      metadata: info,
+      text: JSON.stringify({
+        encrypted: info.encrypted,
+        standardAcroFormFields: info.hasForm,
+        xfaForm: info.hasXFA,
+        metadataPresent: Boolean(info.title || info.author || info.subject || info.keywords || info.creator || info.producer),
+        note: "This checker reports only properties verifiable by the browser PDF parser. It does not claim to detect every possible PDF exploit, embedded object, or signature issue.",
+      }, null, 2),
+    };
+  }
+
+  if (toolId === "pdf-metadata-viewer") return { metadata: await inspectPdf(files[0]) };
+
+  if (toolId === "pdf-viewer") {
+    ensurePdfFile(files[0]);
+    return { blob: files[0], filename: files[0].name, mimeType: "application/pdf", size: files[0].size };
+  }
+
+  if (["jpg-to-pdf", "png-to-pdf", "webp-to-pdf", "bmp-to-pdf", "tiff-to-pdf"].includes(toolId)) {
+    return makePdfFromImage(files[0], signal, onProgress);
+  }
+
+  if (toolId === "images-to-pdf") return imagesToPdf(files, signal, onProgress);
+
+  if (["pdf-to-jpg", "pdf-to-png", "pdf-to-webp", "pdf-to-images", "pdf-pages-to-images"].includes(toolId)) {
+    const mime = toolId === "pdf-to-jpg" ? "image/jpeg" : toolId === "pdf-to-webp" ? "image/webp" : "image/png";
+    return pdfToImages(files[0], { ...options, imageMimeType: mime }, signal, onProgress);
+  }
+
+  if (toolId === "merge-pdf") {
+    if (files.length < 2) throw new PdfEngineError("INVALID_INPUT", "Select at least two PDF files to merge.");
+    const out = await PDFDocument.create();
+    for (let i = 0; i < files.length; i++) {
+      assertNotAborted(signal);
+      const source = await loadPdf(files[i]);
+      const copied = await out.copyPages(source, source.getPageIndices());
+      copied.forEach((p) => out.addPage(p));
+      report((i + 1) / files.length, `Merged ${i + 1} of ${files.length} PDFs`, onProgress);
+    }
+    return savePdf(out, "merged.pdf");
+  }
+
+  const pdf = await loadPdf(files[0]);
+
+
+  if (toolId === "remove-pdf-metadata" || toolId === "pdf-metadata-cleaner" || toolId === "pdf-privacy-cleaner") {
+    clearMetadata(pdf);
+    return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-clean.pdf`);
+  }
+
+  if (toolId === "pdf-form-filler") return fillForm(files[0], options, "text");
+  if (toolId === "pdf-checkbox-filler") return fillForm(files[0], options, "checkbox");
+  if (toolId === "pdf-radio-button-filler") return fillForm(files[0], options, "radio");
+  if (toolId === "pdf-flatten-tool") return fillForm(files[0], options, "text", true);
+
+  if (toolId === "pdf-page-numbering") {
+    const pageIndices = options.pages?.length ? parsePageNumbers(options.pages.map((index) => String(index + 1)).join(","), pdf.getPageCount()) : undefined;
+    await drawPageNumbers(pdf, options.pageNumberStart ?? 1, options.pageNumberPosition ?? "bottom-center", hexColor(options.color), pageIndices);
+    return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-numbered.pdf`);
+  }
+
+  if (["rotate-pdf", "delete-pdf-pages", "extract-pdf-pages", "reorder-pdf-pages", "duplicate-pdf-pages", "reverse-pdf-pages", "split-pdf", "pdf-page-organizer"].includes(toolId)) {
+    const count = pdf.getPageCount();
+    let indices = options.pages?.length ? options.pages : Array.from({ length: count }, (_, i) => i);
+
+    if (toolId === "delete-pdf-pages") {
+      const remove = new Set(indices);
+      indices = Array.from({ length: count }, (_, i) => i).filter((i) => !remove.has(i));
+      if (!indices.length) throw new PdfEngineError("INVALID_OPTIONS", "You cannot delete every page.");
+    } else if (toolId === "reverse-pdf-pages") {
+      indices.reverse();
+    } else if (toolId === "reorder-pdf-pages" || toolId === "pdf-page-organizer") {
+      if (!options.pageOrder?.length) throw new PdfEngineError("INVALID_OPTIONS", "Provide a complete page order.");
+      const order = [...options.pageOrder];
+      if (order.length !== count || new Set(order).size !== count || order.some((index) => index < 0 || index >= count)) {
+        throw new PdfEngineError("INVALID_OPTIONS", `Page order must contain all ${count} pages exactly once.`);
+      }
+      indices = order;
+    } else if (toolId === "duplicate-pdf-pages") {
+      const selectedPages = options.duplicatePages?.length ? [...new Set(options.duplicatePages)] : [options.duplicatePage ?? indices[0] ?? 0];
+      if (selectedPages.some((index) => index < 0 || index >= count)) {
+        throw new PdfEngineError("PAGE_RANGE", "One or more duplicate pages are outside the PDF.");
+      }
+      const selectedSet = new Set(selectedPages);
+      const mode = options.duplicateMode ?? "after";
+      const ordered: number[] = [];
+      for (let index = 0; index < count; index++) {
+        if (mode === "before" && selectedSet.has(index)) ordered.push(index);
+        ordered.push(index);
+        if (mode === "after" && selectedSet.has(index)) ordered.push(index);
+      }
+      indices = ordered;
+    }
+
+    if (toolId === "rotate-pdf") {
+      const rotation = options.rotate ?? 90;
+      for (const index of indices) {
+        const page = pageForIndex(pdf, index);
+        page.setRotation(degrees(rotation));
+      }
+      return savePdf(pdf, `${files[0].name.replace(/\.pdf$/i, "")}-rotated.pdf`);
+    }
+
+    if (toolId === "split-pdf") {
+      const chunks = options.pages?.length ? [options.pages] : Array.from({ length: count }, (_, i) => [i]);
+      const first = chunks[0];
+      const split = await copySelectedPages(pdf, first, signal, onProgress);
+      return savePdf(split, `${files[0].name.replace(/\.pdf$/i, "")}-split-1.pdf`);
+    }
+
+    const out = await copySelectedPages(pdf, indices, signal, onProgress);
+    return savePdf(out, `${files[0].name.replace(/\.pdf$/i, "")}-pages.pdf`);
+  }
+
+  if (["pdf-watermark", "pdf-stamp", "add-text-to-pdf", "add-image-to-pdf", "add-signature-to-pdf", "pdf-highlight-tool", "pdf-drawing-tool", "pdf-annotation-tool", "pdf-whiteout-tool"].includes(toolId)) {
+    return annotatePdf(files[0], toolId, options, signal, onProgress);
+  }
+
+  throw new PdfEngineError("UNSUPPORTED", `The PDF tool "${toolId}" is not implemented by the browser engine.`);
 }
