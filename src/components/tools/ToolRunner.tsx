@@ -11,6 +11,8 @@ import AudioTool from "../audio/AudioTool";
 import VideoTool from "../video/VideoTool";
 import FileDataTool from "../data/DataTool";
 import PDFTool from "@/components/pdf/PDFTool";
+import SecurityTool from "@/components/security/SecurityTool";
+import DateTimeTool from "@/components/date-time/DateTimeTool";    
 
 interface ToolRunnerProps {
   tool: Tool;
@@ -51,6 +53,11 @@ export default function ToolRunner({
   case "pdf":
   return <PDFTool toolId={tool.id} />;
 
+  case "security":
+  return <SecurityTool toolId={tool.id} />;
+
+  case "date-time":
+  return <DateTimeTool toolId={tool.id} />;   
 
     default:
       return (

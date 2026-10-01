@@ -640,6 +640,121 @@ function DataTool(
   };
 }
 
+function securityTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false
+): Tool {
+  return {
+    id,
+    name,
+    category: "security",
+    description,
+    icon: "ShieldCheck",
+    type: "security",
+    engine: "security",
+    available: true,
+    popular,
+
+    seo: {
+      title: `${name} - Free Online Security Tool | WorkAbhi`,
+      description:
+        `${description} Use WorkAbhi's free browser-based security tool.`,
+      keywords: [
+        name.toLowerCase(),
+        "security tool",
+        "online security tool",
+        "free security tool",
+        "privacy tool",
+        "WorkAbhi",
+      ],
+      intro:
+        `${description} WorkAbhi processes supported security operations directly in your browser.`,
+      howToUse: [
+        `Open the ${name}.`,
+        "Enter or configure the required input.",
+        "Run the tool.",
+        "Review the result.",
+        "Copy the result when needed.",
+      ],
+      faq: [
+        {
+          question: `Is ${name} free?`,
+          answer: "Yes. WorkAbhi provides this security tool for free.",
+        },
+        {
+          question: "Is my data uploaded to a server?",
+          answer:
+            "The supported security and encoding operations are designed to run directly in your browser.",
+        },
+        {
+          question: "Do I need an account?",
+          answer:
+            "No. These tools are designed to work without requiring an account.",
+        },
+      ],
+    },
+  };
+}
+
+function dateTimeTool(
+  id: string,
+  name: string,
+  description: string,
+  popular = false,
+): Tool {
+  return {
+    id,
+    name,
+    category: "date-time",
+    description,
+    icon: "CalendarClock",
+    type: "date-time",
+    engine: "date-time",
+    available: true,
+    popular,
+
+    seo: {
+      title: `${name} - Free Online Date & Time Tool | WorkAbhi`,
+      description: `${description} Use WorkAbhi's free browser-based date and time tool.`,
+      keywords: [
+        name.toLowerCase(),
+        "date calculator",
+        "time tool",
+        "calendar tool",
+        "WorkAbhi",
+      ],
+      intro: `${description} WorkAbhi processes this date and time task directly in your browser.`,
+
+      howToUse: [
+        `Open the ${name}.`,
+        "Enter the required values.",
+        "Run the calculation or generator.",
+        "Review and copy the result.",
+      ],
+
+      faq: [
+        {
+          question: `Is ${name} free?`,
+          answer:
+            "Yes. WorkAbhi provides this date and time tool for free.",
+        },
+        {
+          question: "Is my data uploaded to a server?",
+          answer:
+            "Supported date and time calculations run directly in your browser.",
+        },
+        {
+          question: "Do I need an account?",
+          answer:
+            "No. The tool is designed to work without an account.",
+        },
+      ],
+    },
+  };
+}
+
 
 /* ==========================================
    ALL WORKABHI TOOLS
@@ -2444,6 +2559,244 @@ DataTool(
     "PDF Security Checker",
     "Inspect supported PDF security and document properties."
   ),
+
+  /* ==========================================
+   SECURITY TOOLS — 17
+========================================== */
+
+securityTool(
+  "strong-password-generator",
+  "Strong Password Generator",
+  "Generate a strong cryptographically random password."
+),
+
+securityTool(
+  "passphrase-generator",
+  "Passphrase Generator",
+  "Generate a random multi-word passphrase."
+),
+
+securityTool(
+  "pin-generator",
+  "PIN Generator",
+  "Generate a cryptographically random numeric PIN."
+),
+
+securityTool(
+  "username-generator",
+  "Username Generator",
+  "Generate a random username."
+),
+
+securityTool(
+  "sha-256-hash-generator",
+  "SHA-256 Hash Generator",
+  "Generate a SHA-256 hash from text."
+),
+
+securityTool(
+  "sha-512-hash-generator",
+  "SHA-512 Hash Generator",
+  "Generate a SHA-512 hash from text."
+),
+
+securityTool(
+  "md5-hash-generator",
+  "MD5 Hash Generator",
+  "Generate an MD5 hash from text."
+),
+
+securityTool(
+  "sha-1-hash-generator",
+  "SHA-1 Hash Generator",
+  "Generate a SHA-1 hash from text."
+),
+
+securityTool(
+  "base64-encoder",
+  "Base64 Encoder",
+  "Encode text as Base64."
+),
+
+securityTool(
+  "base64-decoder",
+  "Base64 Decoder",
+  "Decode Base64 text into readable text."
+),
+
+securityTool(
+  "url-encoder",
+  "URL Encoder",
+  "Percent-encode text for use in URLs."
+),
+
+securityTool(
+  "url-decoder",
+  "URL Decoder",
+  "Decode percent-encoded URL text."
+),
+
+securityTool(
+  "html-encoder",
+  "HTML Encoder",
+  "Encode HTML-sensitive characters into entities."
+),
+
+securityTool(
+  "html-decoder",
+  "HTML Decoder",
+  "Decode HTML entities into readable text."
+),
+
+securityTool(
+  "rot13-encoder",
+  "ROT13 Encoder",
+  "Encode text using ROT13."
+),
+
+securityTool(
+  "rot13-decoder",
+  "ROT13 Decoder",
+  "Decode ROT13 text."
+),
+
+securityTool(
+  "caesar-cipher",
+  "Caesar Cipher",
+  "Encrypt or transform text using a configurable Caesar shift."
+),
+
+dateTimeTool(
+  "leap-year-checker",
+  "Leap Year Checker",
+  "Check whether a year is a leap year.",
+),
+
+dateTimeTool(
+  "week-number-calculator",
+  "Week Number Calculator",
+  "Calculate the ISO week number for a date.",
+),
+
+dateTimeTool(
+  "date-difference",
+  "Date Difference",
+  "Calculate the difference between two dates.",
+),
+
+dateTimeTool(
+  "days-until-calculator",
+  "Days Until Calculator",
+  "Calculate how many days remain until a selected date.",
+),
+
+dateTimeTool(
+  "date-to-timestamp",
+  "Date to Timestamp",
+  "Convert a date to a Unix-style timestamp.",
+),
+
+dateTimeTool(
+  "timestamp-to-date",
+  "Timestamp to Date",
+  "Convert a timestamp into a readable date.",
+),
+
+dateTimeTool(
+  "random-number-generator",
+  "Random Number Generator",
+  "Generate a random number within a selected range.",
+),
+
+dateTimeTool(
+  "random-name-generator",
+  "Random Name Generator",
+  "Generate a random name.",
+),
+
+dateTimeTool(
+  "random-password-generator",
+  "Random Password Generator",
+  "Generate a random password.",
+),
+
+dateTimeTool(
+  "random-choice-picker",
+  "Random Choice Picker",
+  "Pick one random choice from a list.",
+),
+
+dateTimeTool(
+  "stopwatch",
+  "Stopwatch",
+  "Measure elapsed time.",
+),
+
+dateTimeTool(
+  "countdown-timer",
+  "Countdown Timer",
+  "Run a countdown timer.",
+),
+
+dateTimeTool(
+  "age-calculator",
+  "Age Calculator",
+  "Calculate age in years, months and days.",
+),
+
+dateTimeTool(
+  "date-calculator",
+  "Date Calculator",
+  "Add years, months and days to a date.",
+),
+
+dateTimeTool(
+  "working-days-calculator",
+  "Working Days Calculator",
+  "Calculate working days excluding weekends.",
+),
+
+dateTimeTool(
+  "business-days-calculator",
+  "Business Days Calculator",
+  "Calculate business days between two dates.",
+),
+
+dateTimeTool(
+  "pomodoro-timer",
+  "Pomodoro Timer",
+  "Run a 25-minute Pomodoro focus timer.",
+),
+
+dateTimeTool(
+  "calendar-generator",
+  "Calendar Generator",
+  "Generate a complete calendar for a year.",
+),
+
+dateTimeTool(
+  "monthly-calendar-generator",
+  "Monthly Calendar Generator",
+  "Generate a monthly calendar.",
+),
+
+dateTimeTool(
+  "year-calendar-generator",
+  "Year Calendar Generator",
+  "Generate all twelve months of a year.",
+),
+
+dateTimeTool(
+  "random-date-generator",
+  "Random Date Generator",
+  "Generate a random date between two dates.",
+),
+
+dateTimeTool(
+  "unix-timestamp-converter",
+  "Unix Timestamp Converter",
+  "Convert Unix timestamps between seconds and readable dates.",
+),
 
 ];
 /* ==========================================

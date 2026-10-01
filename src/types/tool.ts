@@ -8,6 +8,7 @@ export type ToolType =
   | "developer"
   | "qr"
   | "code"
+  | "security"
   | "generator"
   | "audio"
   | "video";
