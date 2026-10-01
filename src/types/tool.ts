@@ -1,3 +1,5 @@
+import { time } from "console";
+
 export type ToolType =
   | "calculator"
   | "text"
@@ -10,6 +12,7 @@ export type ToolType =
   | "code"
   | "security"
   | "generator"
+  | "date-time"
   | "audio"
   | "video";
 
