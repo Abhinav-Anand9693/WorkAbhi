@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PdfToolId, PdfProcessOptions, PdfOutput } from "@/engine/pdf/pdfTypes";
 import { PdfEngineError } from "@/engine/pdf/pdfTypes";
 import { processPdf, inspectPdf } from "@/engine/pdf/pdfEngine";
-import { getPdfPageCount, renderPdfPage } from "@/engine/pdf/pdfRender";
+import { PdfRenderSession } from "@/engine/pdf/pdfRender";
 
 const PDF_TOOLS = new Set<PdfToolId>([
   "merge-pdf","split-pdf","rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages",
@@ -119,6 +119,10 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
   const abortRef = useRef<AbortController | null>(null);
   const signatureCanvasRef = useRef<HTMLCanvasElement>(null);
   const viewerAbortRef = useRef<AbortController | null>(null);
+  const viewerSessionRef = useRef<PdfRenderSession | null>(null);
+  const thumbnailSessionRef = useRef<PdfRenderSession | null>(null);
+  const viewerPageRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const viewerRenderedRef = useRef<Set<number>>(new Set());
 
   const needsPdf = !["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf","text-to-pdf","pdf-password-generator"].includes(id);
   const needsImages = ["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf"].includes(id);
@@ -128,6 +132,8 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
     return () => {
       abortRef.current?.abort();
       viewerAbortRef.current?.abort();
+      void viewerSessionRef.current?.close();
+      void thumbnailSessionRef.current?.close();
     };
   }, []);
 
@@ -137,6 +143,33 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
     };
   }, [viewerUrl]);
 
+
+  useEffect(() => {
+    if (!viewerUrl || !viewerPageCount || !viewerSessionRef.current) return;
+    const session = viewerSessionRef.current;
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const index = Number((entry.target as HTMLElement).dataset.pageIndex);
+        if (!Number.isInteger(index) || viewerRenderedRef.current.has(index)) continue;
+        viewerRenderedRef.current.add(index);
+        void session.renderPage(index, 1.05)
+          .then((dataUrl) => setViewerPages((current) => ({ ...current, [index]: dataUrl })))
+          .catch((e) => {
+            viewerRenderedRef.current.delete(index);
+            if (!viewerAbortRef.current?.signal.aborted) {
+              setError(e instanceof Error ? e.message : "PDF could not be rendered on this device.");
+            }
+          });
+      }
+    }, { rootMargin: "1000px 0px" });
+
+    for (let index = 0; index < viewerPageCount; index++) {
+      const element = viewerPageRefs.current[index];
+      if (element) observer.observe(element);
+    }
+    return () => observer.disconnect();
+  }, [viewerUrl, viewerPageCount]);
 
   async function loadFileSelection(next: File[]) {
     setError("");
@@ -217,30 +250,18 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
         if (output.blob && id === "pdf-viewer") {
           if (viewerUrl) URL.revokeObjectURL(viewerUrl);
           viewerAbortRef.current?.abort();
+          await viewerSessionRef.current?.close();
           const viewerFile = new File([output.blob], output.filename ?? files[0]?.name ?? "document.pdf", { type: "application/pdf" });
           const controller = new AbortController();
+          const session = new PdfRenderSession(viewerFile);
           viewerAbortRef.current = controller;
+          viewerSessionRef.current = session;
+          viewerRenderedRef.current = new Set();
+          viewerPageRefs.current = {};
           setViewerUrl(URL.createObjectURL(output.blob));
           setViewerPages({});
-          setViewerPageCount(0);
-          setViewerBusy(true);
-          void (async () => {
-            try {
-              const count = await getPdfPageCount(viewerFile);
-              setViewerPageCount(count);
-              for (let index = 0; index < count; index++) {
-                if (controller.signal.aborted) return;
-                const dataUrl = await renderPdfPage(viewerFile, index, 1.05);
-                if (controller.signal.aborted) return;
-                setViewerPages((current) => ({ ...current, [index]: dataUrl }));
-              }
-            } catch (e) {
-              if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "PDF could not be rendered on this device.");
-            } finally {
-              if (viewerAbortRef.current === controller) viewerAbortRef.current = null;
-              setViewerBusy(false);
-            }
-          })();
+          setViewerPageCount(await session.getPageCount());
+          setViewerBusy(false);
         }
       }
       setProgress(1);
@@ -254,9 +275,16 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
   }
 
   async function renderThumbnail(index: number) {
-    if (!files[0] || pageImages[index]) return;
+    const file = files[0];
+    if (!file || pageImages[index]) return;
     try {
-      const dataUrl = await renderPdfPage(files[0], index, 0.42);
+      let session = thumbnailSessionRef.current;
+      if (!session || session.sourceFile !== file) {
+        await session?.close();
+        session = new PdfRenderSession(file);
+        thumbnailSessionRef.current = session;
+      }
+      const dataUrl = await session.renderPage(index, 0.42);
       setPageImages((current) => ({ ...current, [index]: dataUrl }));
     } catch {
       // Thumbnail failures must not break the page workspace.
@@ -271,6 +299,10 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
     abortRef.current?.abort();
     if (viewerUrl) URL.revokeObjectURL(viewerUrl);
     viewerAbortRef.current?.abort();
+    void viewerSessionRef.current?.close();
+    void thumbnailSessionRef.current?.close();
+    viewerSessionRef.current = null;
+    thumbnailSessionRef.current = null;
     Object.values(pageImages).forEach((url) => URL.revokeObjectURL(url));
     setViewerUrl(null);
     setViewerPages({});
@@ -511,7 +543,12 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
           {viewerBusy && <div className="mb-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${viewerPageCount ? Math.round((Object.keys(viewerPages).length / viewerPageCount) * 100) : 8}%` }} /></div>}
           <div className="space-y-4">
             {Array.from({ length: viewerPageCount }, (_, index) => (
-              <div key={index} className="overflow-hidden rounded-lg border bg-white shadow-sm">
+              <div
+                key={index}
+                ref={(element) => { viewerPageRefs.current[index] = element; }}
+                data-page-index={index}
+                className="overflow-hidden rounded-lg border bg-white shadow-sm"
+              >
                 {viewerPages[index] ? <Image src={viewerPages[index]} alt={`PDF page ${index + 1}`} width={1200} height={1600} unoptimized className="mx-auto h-auto w-full max-w-5xl" /> : <div className="flex aspect-[3/4] items-center justify-center text-sm text-muted-foreground">Rendering page {index + 1}…</div>}
                 <div className="border-t px-3 py-2 text-center text-xs text-muted-foreground">Page {index + 1}</div>
               </div>

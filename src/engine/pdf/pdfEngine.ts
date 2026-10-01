@@ -17,6 +17,123 @@ const MAX_INPUT_BYTES = 256 * 1024 * 1024;
 const MAX_PAGES = 500;
 const MAX_RENDER_PIXELS = 24_000_000;
 
+const ZIP_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
+
+function crc32(bytes: Uint8Array) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let bit = 0; bit < 8; bit++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function writeU16(target: Uint8Array, offset: number, value: number) {
+  target[offset] = value & 0xff;
+  target[offset + 1] = (value >>> 8) & 0xff;
+}
+
+function writeU32(target: Uint8Array, offset: number, value: number) {
+  target[offset] = value & 0xff;
+  target[offset + 1] = (value >>> 8) & 0xff;
+  target[offset + 2] = (value >>> 16) & 0xff;
+  target[offset + 3] = (value >>> 24) & 0xff;
+}
+
+async function createStoredZip(entries: Array<{ name: string; blob: Blob }>): Promise<Blob> {
+  const encoder = new TextEncoder();
+  const prepared: Array<{ name: Uint8Array; data: Uint8Array; crc: number; offset: number }> = [];
+  let totalBytes = 0;
+  let offset = 0;
+
+  for (const entry of entries) {
+    const data = new Uint8Array(await entry.blob.arrayBuffer());
+    totalBytes += data.byteLength;
+    if (totalBytes > ZIP_MAX_OUTPUT_BYTES) {
+      throw new PdfEngineError("MEMORY_RISK", "The split output is too large to package safely in this browser.");
+    }
+    const name = encoder.encode(entry.name);
+    if (name.byteLength > 0xffff || data.byteLength > 0xffffffff || offset > 0xffffffff) {
+      throw new PdfEngineError("MEMORY_RISK", "The split output is too large for browser ZIP packaging.");
+    }
+    const crc = crc32(data);
+    const localSize = 30 + name.byteLength;
+    prepared.push({ name, data, crc, offset });
+    offset += localSize + data.byteLength;
+  }
+
+  let centralSize = 0;
+  for (const entry of prepared) centralSize += 46 + entry.name.byteLength;
+  if (offset + centralSize + 22 > 0xffffffff) {
+    throw new PdfEngineError("MEMORY_RISK", "The split output is too large for browser ZIP packaging.");
+  }
+
+  const parts: Uint8Array[] = [];
+  for (const entry of prepared) {
+    const header = new Uint8Array(30 + entry.name.byteLength);
+    writeU32(header, 0, 0x04034b50);
+    writeU16(header, 4, 20);
+    writeU16(header, 6, 0x0800);
+    writeU16(header, 8, 0);
+    writeU16(header, 10, 0);
+    writeU16(header, 12, 0);
+    writeU32(header, 14, entry.crc);
+    writeU32(header, 18, entry.data.byteLength);
+    writeU32(header, 22, entry.data.byteLength);
+    writeU16(header, 26, entry.name.byteLength);
+    writeU16(header, 28, 0);
+    header.set(entry.name, 30);
+    parts.push(header, entry.data);
+  }
+
+  const central = new Uint8Array(centralSize);
+  let centralOffset = 0;
+  for (const entry of prepared) {
+    const header = new Uint8Array(46 + entry.name.byteLength);
+    writeU32(header, 0, 0x02014b50);
+    writeU16(header, 4, 20);
+    writeU16(header, 6, 20);
+    writeU16(header, 8, 0x0800);
+    writeU16(header, 10, 0);
+    writeU16(header, 12, 0);
+    writeU16(header, 14, 0);
+    writeU32(header, 16, entry.crc);
+    writeU32(header, 20, entry.data.byteLength);
+    writeU32(header, 24, entry.data.byteLength);
+    writeU16(header, 28, entry.name.byteLength);
+    writeU16(header, 30, 0);
+    writeU16(header, 32, 0);
+    writeU16(header, 34, 0);
+    writeU16(header, 36, 0);
+    writeU32(header, 38, 0);
+    writeU32(header, 42, entry.offset);
+    header.set(entry.name, 46);
+    central.set(header, centralOffset);
+    centralOffset += header.byteLength;
+  }
+  parts.push(central);
+
+  const end = new Uint8Array(22);
+  writeU32(end, 0, 0x06054b50);
+  writeU16(end, 4, 0);
+  writeU16(end, 6, 0);
+  writeU16(end, 8, prepared.length);
+  writeU16(end, 10, prepared.length);
+  writeU32(end, 12, centralSize);
+  writeU32(end, 16, offset);
+  writeU16(end, 20, 0);
+  parts.push(end);
+
+  const blobParts: BlobPart[] = parts.map((part) => {
+    const copy = new ArrayBuffer(part.byteLength);
+    new Uint8Array(copy).set(part);
+    return copy;
+  });
+  return new Blob(blobParts, { type: "application/zip" });
+}
+
 function assertBrowser() {
   if (typeof window === "undefined") {
     throw new PdfEngineError("BROWSER_UNSUPPORTED", "PDF processing is available in the browser only.");
@@ -694,7 +811,19 @@ export async function processPdf(
       indices = Array.from({ length: count }, (_, i) => i).filter((i) => !remove.has(i));
       if (!indices.length) throw new PdfEngineError("INVALID_OPTIONS", "You cannot delete every page.");
     } else if (toolId === "reverse-pdf-pages") {
-      indices.reverse();
+      const selectedPages = options.pages?.length
+        ? [...new Set(options.pages)]
+        : Array.from({ length: count }, (_, i) => i);
+      if (selectedPages.some((index) => !Number.isInteger(index) || index < 0 || index >= count)) {
+        throw new PdfEngineError("PAGE_RANGE", "One or more reverse pages are outside the PDF.");
+      }
+      const selectedSet = new Set(selectedPages);
+      const reversed = [...selectedPages].reverse();
+      let cursor = 0;
+      indices = Array.from({ length: count }, (_, index) => {
+        if (!selectedSet.has(index)) return index;
+        return reversed[cursor++];
+      });
     } else if (toolId === "reorder-pdf-pages" || toolId === "pdf-page-organizer") {
       if (!options.pageOrder?.length) throw new PdfEngineError("INVALID_OPTIONS", "Provide a complete page order.");
       const order = [...options.pageOrder];
@@ -740,10 +869,28 @@ export async function processPdf(
     }
 
     if (toolId === "split-pdf") {
-      const chunks = options.pages?.length ? [options.pages] : Array.from({ length: count }, (_, i) => [i]);
-      const first = chunks[0];
-      const split = await copySelectedPages(pdf, first, signal, onProgress);
-      return savePdf(split, `${files[0].name.replace(/\.pdf$/i, "")}-split-1.pdf`);
+      const selectedPages = options.pages?.length
+        ? [...new Set(options.pages)]
+        : Array.from({ length: count }, (_, i) => i);
+      if (!selectedPages.length) throw new PdfEngineError("INVALID_OPTIONS", "Select at least one page to split.");
+
+      const entries: Array<{ name: string; blob: Blob }> = [];
+      const baseName = sanitizeName(files[0].name.replace(/\.pdf$/i, ""));
+      for (let i = 0; i < selectedPages.length; i++) {
+        assertNotAborted(signal);
+        const split = await copySelectedPages(pdf, [selectedPages[i]], signal, (p) =>
+          report((i + p.progress) / selectedPages.length, `Creating split PDF ${i + 1} of ${selectedPages.length}`, onProgress),
+        );
+        const output = await savePdf(split, `${baseName}-split-${i + 1}.pdf`);
+        entries.push({ name: output.filename ?? `${baseName}-split-${i + 1}.pdf`, blob: output.blob! });
+      }
+      const zip = await createStoredZip(entries);
+      return {
+        blob: zip,
+        filename: `${baseName}-split.zip`,
+        mimeType: "application/zip",
+        size: zip.size,
+      };
     }
 
     const out = await copySelectedPages(pdf, indices, signal, onProgress);
