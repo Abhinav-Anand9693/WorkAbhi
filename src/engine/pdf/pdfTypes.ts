@@ -52,6 +52,9 @@ export interface PdfPageSelection {
 export interface PdfProcessOptions {
   pages?: number[];
   rotate?: 0 | 90 | 180 | 270;
+  rotation?:number;
+  borderWidth?: number;
+  backgroundOpacity?: number;
   pageOrder?: number[];
   duplicatePage?: number;
   duplicatePages?: number[];

@@ -275,11 +275,12 @@ async function annotatePdf(
 ): Promise<PdfOutput> {
   const pdf = await loadPdf(file);
   const pages = pdf.getPages();
-  const selected = options.pages?.length ? options.pages : [0];
+  const selected = options.pages?.length ? options.pages : pages.map((_, index) => index);
   const color = hexColor(options.color);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const size = Math.max(6, Math.min(96, options.fontSize ?? 18));
   const opacity = Math.max(0.05, Math.min(1, options.opacity ?? 0.35));
+  const rotation = Number.isFinite(options.rotation) ? Number(options.rotation) : -35;
 
   for (let i = 0; i < selected.length; i++) {
     assertNotAborted(signal);
@@ -295,12 +296,16 @@ async function annotatePdf(
         font,
         color,
         opacity,
-        rotate: degrees(-35),
+        rotate: degrees(rotation),
       });
     } else if (toolId === "pdf-stamp") {
       const stamp = options.stampText || "APPROVED";
-      page.drawRectangle({ x: point.x - 8, y: point.y - 8, width: Math.max(80, stamp.length * size * 0.6), height: size + 16, borderColor: color, borderWidth: 1.5, color: rgb(1, 1, 1), opacity: 0.15 });
-      page.drawText(stamp, { x: point.x, y: point.y, size, font, color });
+      const stampWidth = Math.max(80, stamp.length * size * 0.6 + 16);
+      const stampHeight = size + 18;
+      const borderWidth = Math.max(0.5, Math.min(8, options.borderWidth ?? 1.5));
+      const backgroundOpacity = Math.max(0, Math.min(1, options.backgroundOpacity ?? 0.15));
+      page.drawRectangle({ x: point.x - 8, y: point.y - 8, width: stampWidth, height: stampHeight, borderColor: color, borderWidth, color: rgb(1, 1, 1), opacity: backgroundOpacity });
+      page.drawText(stamp, { x: point.x, y: point.y, size, font, color, opacity });
     } else if (toolId === "add-text-to-pdf") {
       page.drawText(options.text || "Text", { x: point.x, y: point.y, size, font, color });
     } else if (toolId === "pdf-highlight-tool") {

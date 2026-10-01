@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { PdfToolId, PdfProcessOptions, PdfOutput } from "@/engine/pdf/pdfTypes";
 import { PdfEngineError } from "@/engine/pdf/pdfTypes";
 import { processPdf, inspectPdf } from "@/engine/pdf/pdfEngine";
-import { renderPdfPage } from "@/engine/pdf/pdfRender";
+import { getPdfPageCount, renderPdfPage } from "@/engine/pdf/pdfRender";
 
 const PDF_TOOLS = new Set<PdfToolId>([
   "merge-pdf","split-pdf","rotate-pdf","delete-pdf-pages","extract-pdf-pages","reorder-pdf-pages",
@@ -82,9 +82,14 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
   const [duplicateMode, setDuplicateMode] = useState<"before" | "after">("after");
   const [busy, setBusy] = useState(false);
   const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const [viewerPages, setViewerPages] = useState<Record<number, string>>({});
+  const [viewerPageCount, setViewerPageCount] = useState(0);
+  const [viewerBusy, setViewerBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const signatureCanvasRef = useRef<HTMLCanvasElement>(null);
+  const viewerAbortRef = useRef<AbortController | null>(null);
 
   const needsPdf = !["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf","text-to-pdf","pdf-password-generator"].includes(id);
   const needsImages = ["jpg-to-pdf","png-to-pdf","webp-to-pdf","bmp-to-pdf","tiff-to-pdf","images-to-pdf"].includes(id);
@@ -93,6 +98,7 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      viewerAbortRef.current?.abort();
     };
   }, []);
 
@@ -172,7 +178,31 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
         setResult(output);
         if (output.blob && id === "pdf-viewer") {
           if (viewerUrl) URL.revokeObjectURL(viewerUrl);
+          viewerAbortRef.current?.abort();
+          const viewerFile = new File([output.blob], output.filename ?? files[0]?.name ?? "document.pdf", { type: "application/pdf" });
+          const controller = new AbortController();
+          viewerAbortRef.current = controller;
           setViewerUrl(URL.createObjectURL(output.blob));
+          setViewerPages({});
+          setViewerPageCount(0);
+          setViewerBusy(true);
+          void (async () => {
+            try {
+              const count = await getPdfPageCount(viewerFile);
+              setViewerPageCount(count);
+              for (let index = 0; index < count; index++) {
+                if (controller.signal.aborted) return;
+                const dataUrl = await renderPdfPage(viewerFile, index, 1.05);
+                if (controller.signal.aborted) return;
+                setViewerPages((current) => ({ ...current, [index]: dataUrl }));
+              }
+            } catch (e) {
+              if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "PDF could not be rendered on this device.");
+            } finally {
+              if (viewerAbortRef.current === controller) viewerAbortRef.current = null;
+              setViewerBusy(false);
+            }
+          })();
         }
       }
       setProgress(1);
@@ -202,8 +232,12 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
   function reset() {
     abortRef.current?.abort();
     if (viewerUrl) URL.revokeObjectURL(viewerUrl);
+    viewerAbortRef.current?.abort();
     Object.values(pageImages).forEach((url) => URL.revokeObjectURL(url));
     setViewerUrl(null);
+    setViewerPages({});
+    setViewerPageCount(0);
+    setViewerBusy(false);
     setFiles([]);
     setPages([]);
     setSelected([]);
@@ -339,10 +373,55 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
         </label>
       )}
 
-      {["pdf-watermark","pdf-stamp","add-text-to-pdf","pdf-annotation-tool"].includes(id) && (
-        <div className="grid gap-3 sm:grid-cols-2">
-          <input className="rounded-xl border p-3" placeholder="Text" value={textValue} onChange={(e) => { setTextValue(e.target.value); setOptions((o) => ({ ...o, text: e.target.value, watermarkText: e.target.value, stampText: e.target.value })); }} />
-          <input className="rounded-xl border p-3" type="number" min="6" max="96" placeholder="Font size" value={options.fontSize ?? 18} onChange={(e) => setOptions((o) => ({ ...o, fontSize: Number(e.target.value) }))} />
+      {["pdf-watermark","pdf-stamp","add-text-to-pdf"].includes(id) && (
+        <div className="rounded-2xl border p-4 space-y-4">
+          <div><h3 className="font-semibold">{id === "pdf-watermark" ? "Watermark settings" : id === "pdf-stamp" ? "Stamp settings" : "Add text settings"}</h3><p className="text-xs text-muted-foreground">Configure exactly where and how the content is added. Leave page selection empty to apply to every page.</p></div>
+          <input className="w-full rounded-xl border p-3" placeholder={id === "pdf-watermark" ? "Watermark text" : id === "pdf-stamp" ? "Stamp text" : "Text to add"} value={textValue} onChange={(e) => { setTextValue(e.target.value); setOptions((o) => ({ ...o, text: e.target.value, watermarkText: e.target.value, stampText: e.target.value })); }} />
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="text-sm">Font size<input className="mt-2 w-full rounded-xl border p-3" type="number" min="6" max="96" value={options.fontSize ?? 18} onChange={(e) => setOptions((o) => ({ ...o, fontSize: Number(e.target.value) }))} /></label>
+            <label className="text-sm">Opacity<input className="mt-2 w-full" type="range" min="5" max="100" value={Math.round((options.opacity ?? 0.35) * 100)} onChange={(e) => setOptions((o) => ({ ...o, opacity: Number(e.target.value) / 100 }))} /></label>
+            <label className="text-sm">Text color<input className="mt-2 h-11 w-full rounded-xl border p-1" type="color" value={options.color ?? "#ef4444"} onChange={(e) => setOptions((o) => ({ ...o, color: e.target.value }))} /></label>
+            {id === "pdf-watermark" && <label className="text-sm">Rotation<input className="mt-2 w-full rounded-xl border p-3" type="number" min="-180" max="180" value={options.rotation ?? -35} onChange={(e) => setOptions((o) => ({ ...o, rotation: Number(e.target.value) }))} /></label>}
+            {id === "pdf-stamp" && <label className="text-sm">Border width<input className="mt-2 w-full rounded-xl border p-3" type="number" min="0.5" max="8" step="0.5" value={options.borderWidth ?? 1.5} onChange={(e) => setOptions((o) => ({ ...o, borderWidth: Number(e.target.value) }))} /></label>}
+            {id === "pdf-stamp" && <label className="text-sm">Background opacity<input className="mt-2 w-full" type="range" min="0" max="100" value={Math.round((options.backgroundOpacity ?? 0.15) * 100)} onChange={(e) => setOptions((o) => ({ ...o, backgroundOpacity: Number(e.target.value) / 100 }))} /></label>}
+            <label className="text-sm">X position<input className="mt-2 w-full rounded-xl border p-3" type="number" value={options.x ?? 40} onChange={(e) => setOptions((o) => ({ ...o, x: Number(e.target.value) }))} /></label>
+            <label className="text-sm">Y position<input className="mt-2 w-full rounded-xl border p-3" type="number" value={options.y ?? 40} onChange={(e) => setOptions((o) => ({ ...o, y: Number(e.target.value) }))} /></label>
+          </div>
+          <label className="block text-sm">Pages to apply<input className="mt-2 w-full rounded-xl border p-3" placeholder="Leave empty for all pages, or e.g. 1,3-5" value={pageInput} onChange={(e) => setPageInput(e.target.value)} /></label>
+        </div>
+      )}
+
+      {id === "add-image-to-pdf" && (
+        <div className="rounded-2xl border p-4 space-y-4">
+          <div><h3 className="font-semibold">Image placement settings</h3><p className="text-xs text-muted-foreground">Choose an image, placement, size and target pages.</p></div>
+          <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/bmp" className="w-full rounded-xl border p-3 text-sm" onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            try {
+              const bitmap = await createImageBitmap(file);
+              try {
+                const canvas = document.createElement("canvas");
+                canvas.width = bitmap.width; canvas.height = bitmap.height;
+                const context = canvas.getContext("2d");
+                if (!context) throw new Error("Canvas is unavailable.");
+                context.drawImage(bitmap, 0, 0);
+                const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+                if (!blob) throw new Error("The image could not be decoded.");
+                const imageBytes = new Uint8Array(await blob.arrayBuffer());
+                setOptions((o) => ({ ...o, imageBytes, imageMimeType: "image/png" }));
+              } finally { bitmap.close(); }
+            } catch (e) { setError(e instanceof Error ? e.message : "The image could not be loaded."); }
+          }} />
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="text-sm">Position<select className="mt-2 w-full rounded-xl border p-3" value={options.imagePosition ?? "center"} onChange={(e) => setOptions((o) => ({ ...o, imagePosition: e.target.value as PdfProcessOptions["imagePosition"] }))}>{["top-left","top-center","top-right","center-left","center","center-right","bottom-left","bottom-center","bottom-right"].map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+            <label className="text-sm">Size<input className="mt-2 w-full" type="range" min="5" max="100" value={options.imageScale ?? 35} onChange={(e) => setOptions((o) => ({ ...o, imageScale: Number(e.target.value) }))} /></label>
+            <label className="text-sm">Opacity<input className="mt-2 w-full" type="range" min="0" max="100" value={options.imageOpacity ?? 100} onChange={(e) => setOptions((o) => ({ ...o, imageOpacity: Number(e.target.value) }))} /></label>
+            <label className="text-sm">Margin<input className="mt-2 w-full rounded-xl border p-3" type="number" min="0" max="200" value={options.imageMargin ?? 24} onChange={(e) => setOptions((o) => ({ ...o, imageMargin: Number(e.target.value) }))} /></label>
+            <label className="text-sm">Custom X (optional)<input className="mt-2 w-full rounded-xl border p-3" type="number" placeholder="Auto" value={options.imageX ?? ""} onChange={(e) => setOptions((o) => ({ ...o, imageX: e.target.value === "" ? undefined : Number(e.target.value) }))} /></label>
+            <label className="text-sm">Custom Y (optional)<input className="mt-2 w-full rounded-xl border p-3" type="number" placeholder="Auto" value={options.imageY ?? ""} onChange={(e) => setOptions((o) => ({ ...o, imageY: e.target.value === "" ? undefined : Number(e.target.value) }))} /></label>
+          </div>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={options.imageKeepAspectRatio ?? true} onChange={(e) => setOptions((o) => ({ ...o, imageKeepAspectRatio: e.target.checked }))} /> Keep aspect ratio</label>
+          <label className="block text-sm">Pages to apply<input className="mt-2 w-full rounded-xl border p-3" placeholder="Leave empty for all pages, or e.g. 1,3-5" value={pageInput} onChange={(e) => setPageInput(e.target.value)} /></label>
         </div>
       )}
 
@@ -374,8 +453,20 @@ function PDFToolInstance({ toolId }: PDFToolProps) {
       )}
 
       {viewerUrl && (
-        <div className="overflow-hidden rounded-xl border">
-          <iframe title="PDF preview" src={viewerUrl} className="h-[70vh] w-full" />
+        <div className="rounded-xl border bg-muted/30 p-2 sm:p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div><h3 className="font-semibold">PDF Viewer</h3><p className="text-xs text-muted-foreground">Browser-native rendering is avoided so the viewer also works on mobile browsers.</p></div>
+            <span className="text-xs text-muted-foreground">{Object.keys(viewerPages).length}/{viewerPageCount || "…"} pages rendered</span>
+          </div>
+          {viewerBusy && <div className="mb-3 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-[width]" style={{ width: `${viewerPageCount ? Math.round((Object.keys(viewerPages).length / viewerPageCount) * 100) : 8}%` }} /></div>}
+          <div className="space-y-4">
+            {Array.from({ length: viewerPageCount }, (_, index) => (
+              <div key={index} className="overflow-hidden rounded-lg border bg-white shadow-sm">
+                {viewerPages[index] ? <Image src={viewerPages[index]} alt={`PDF page ${index + 1}`} width={1200} height={1600} unoptimized className="mx-auto h-auto w-full max-w-5xl" /> : <div className="flex aspect-[3/4] items-center justify-center text-sm text-muted-foreground">Rendering page {index + 1}…</div>}
+                <div className="border-t px-3 py-2 text-center text-xs text-muted-foreground">Page {index + 1}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
