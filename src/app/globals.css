@@ -1,15 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
+  --background: #f7f9fc;
   --foreground: #111827;
 
-  --card: #ffffff;
+  --card: rgba(255, 255, 255, 0.82);
 
   --muted: #f6f7f9;
   --muted-foreground: #667085;
 
-  --border: #e5e7eb;
+  --border: rgba(15, 23, 42, 0.09);
 
   --primary: #2563eb;
   --primary-foreground: #ffffff;
@@ -18,15 +18,15 @@
 }
 
 .dark {
-  --background: #0b0d10;
+  --background: #070a0f;
   --foreground: #f3f4f6;
 
-  --card: #11151a;
+  --card: rgba(17, 21, 26, 0.82);
 
   --muted: #171b21;
   --muted-foreground: #9ca3af;
 
-  --border: #262b33;
+  --border: rgba(148, 163, 184, 0.14);
 
   --primary: #60a5fa;
   --primary-foreground: #07111f;
@@ -40,16 +40,61 @@
 
 html {
   scroll-behavior: smooth;
+  background: var(--background);
 }
 
 body {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
   margin: 0;
-  background: var(--background);
+  background:
+    radial-gradient(circle at 8% 8%, rgba(59, 130, 246, 0.13), transparent 28rem),
+    radial-gradient(circle at 92% 14%, rgba(99, 102, 241, 0.10), transparent 26rem),
+    radial-gradient(circle at 50% 92%, rgba(14, 165, 233, 0.08), transparent 32rem),
+    linear-gradient(135deg, #f8fafc 0%, #f5f7fb 48%, #f8fafc 100%);
+  background-attachment: fixed;
   color: var(--foreground);
   font-family:
     Arial,
     Helvetica,
     sans-serif;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.42;
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: linear-gradient(to bottom, black, transparent 88%);
+  -webkit-mask-image: linear-gradient(to bottom, black, transparent 88%);
+}
+
+.dark body {
+  background:
+    radial-gradient(circle at 8% 8%, rgba(37, 99, 235, 0.16), transparent 28rem),
+    radial-gradient(circle at 92% 14%, rgba(124, 58, 237, 0.13), transparent 26rem),
+    radial-gradient(circle at 50% 92%, rgba(14, 165, 233, 0.08), transparent 32rem),
+    linear-gradient(135deg, #080b10 0%, #0b1017 48%, #080b10 100%);
+}
+
+.dark body::before {
+  opacity: 0.24;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.035) 1px, transparent 1px);
+}
+
+main {
+  position: relative;
+  z-index: 0;
+  min-height: 60vh;
 }
 
 button,
@@ -58,4 +103,14 @@ input,
 textarea,
 select {
   -webkit-tap-highlight-color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  body {
+    background-attachment: scroll;
+  }
 }
