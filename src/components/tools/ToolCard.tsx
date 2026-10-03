@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { Tool } from "@/types/tool";
+import type { Tool } from "@/types/tool"; 
 
 export default function ToolCard({
   tool

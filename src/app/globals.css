@@ -1,61 +1,49 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
+  --background: #f6f8fb;
   --foreground: #111827;
-
   --card: #ffffff;
-
-  --muted: #f6f7f9;
+  --muted: #eef2f6;
   --muted-foreground: #667085;
-
-  --border: #e5e7eb;
-
+  --border: #dfe5ec;
   --primary: #2563eb;
   --primary-foreground: #ffffff;
-
   --destructive: #dc2626;
+  --success: #059669;
+  --warning: #d97706;
+  --radius: 0.875rem;
 }
 
 .dark {
-  --background: #0b0d10;
+  --background: #0b0f14;
   --foreground: #f3f4f6;
-
-  --card: #11151a;
-
-  --muted: #171b21;
+  --card: #111821;
+  --muted: #18212b;
   --muted-foreground: #9ca3af;
-
-  --border: #262b33;
-
+  --border: #293441;
   --primary: #60a5fa;
   --primary-foreground: #07111f;
-
   --destructive: #f87171;
 }
 
-* {
-  border-color: var(--border);
-}
-
-html {
-  scroll-behavior: smooth;
-}
-
+* { border-color: var(--border); }
+html { scroll-behavior: smooth; }
 body {
   margin: 0;
-  background: var(--background);
+  background:
+    radial-gradient(circle at 15% 0%, rgba(37, 99, 235, 0.055), transparent 30rem),
+    radial-gradient(circle at 90% 12%, rgba(99, 102, 241, 0.045), transparent 26rem),
+    var(--background);
   color: var(--foreground);
-  font-family:
-    Arial,
-    Helvetica,
-    sans-serif;
+  font-family: Arial, Helvetica, sans-serif;
 }
 
-button,
-a,
-input,
-textarea,
-select {
-  -webkit-tap-highlight-color: transparent;
+::selection { background: rgba(37, 99, 235, 0.16); }
+button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
+button, a { transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, opacity 160ms ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
