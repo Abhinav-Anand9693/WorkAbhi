@@ -1,5 +1,10 @@
 import exifr from "exifr";
 
+import {
+  throwIfImageProcessingAborted,
+  validateImageDimensions,
+} from "./imageSafety";
+
 export interface ImageMetadata {
   fileName: string;
   fileType: string;
@@ -50,9 +55,7 @@ function simplifyAspectRatio(
   width: number,
   height: number
 ): string {
-  if (!width || !height) {
-    return "Unknown";
-  }
+  if (!width || !height) return "Unknown";
 
   function gcd(a: number, b: number): number {
     while (b !== 0) {
@@ -60,7 +63,6 @@ function simplifyAspectRatio(
       a = b;
       b = remainder;
     }
-
     return Math.abs(a);
   }
 
@@ -73,10 +75,7 @@ function simplifyAspectRatio(
 
 export function getImageDimensions(
   file: Blob
-): Promise<{
-  width: number;
-  height: number;
-}> {
+): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const image = document.createElement("img");
@@ -87,10 +86,12 @@ export function getImageDimensions(
 
       URL.revokeObjectURL(url);
 
-      resolve({
-        width,
-        height,
-      });
+      try {
+        validateImageDimensions(width, height);
+        resolve({ width, height });
+      } catch (error) {
+        reject(error);
+      }
     };
 
     image.onerror = () => {
@@ -154,8 +155,7 @@ export async function getImageMetadata(
   };
 
   for (const [key, value] of Object.entries(exif)) {
-    metadata[key] =
-      formatMetadataValue(value);
+    metadata[key] = formatMetadataValue(value);
   }
 
   return metadata;
@@ -176,7 +176,6 @@ export function imageToDataURL(
             "Unable to convert image to Data URL."
           )
         );
-
         return;
       }
 
@@ -185,9 +184,7 @@ export function imageToDataURL(
 
     reader.onerror = () => {
       reject(
-        new Error(
-          "Unable to read the image file."
-        )
+        new Error("Unable to read the image file.")
       );
     };
 
@@ -210,6 +207,11 @@ export async function pickColor(
   x: number,
   y: number
 ): Promise<PickedColor> {
+  const { width: naturalWidth, height: naturalHeight } =
+    await getImageDimensions(file);
+
+  throwIfImageProcessingAborted(undefined);
+
   const image = await new Promise<HTMLImageElement>(
     (resolve, reject) => {
       const url = URL.createObjectURL(file);
@@ -233,11 +235,13 @@ export async function pickColor(
     }
   );
 
-  const canvas =
-    document.createElement("canvas");
-
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
+  /*
+   * Safety validation above guarantees the source is within the browser
+   * processing budget before a full-resolution canvas is allocated.
+   */
+  const canvas = document.createElement("canvas");
+  canvas.width = naturalWidth;
+  canvas.height = naturalHeight;
 
   const context = canvas.getContext("2d", {
     willReadFrequently: true,
@@ -287,21 +291,13 @@ export async function pickColor(
 
   const hex = `#${[r, g, b]
     .map((value) =>
-      value
-        .toString(16)
-        .padStart(2, "0")
+      value.toString(16).padStart(2, "0")
     )
     .join("")}`;
 
   return {
     hex,
-    rgb: {
-      r,
-      g,
-      b,
-    },
-    rgba: `rgba(${r}, ${g}, ${b}, ${a.toFixed(
-      2
-    )})`,
+    rgb: { r, g, b },
+    rgba: `rgba(${r}, ${g}, ${b}, ${a.toFixed(2)})`,
   };
 }

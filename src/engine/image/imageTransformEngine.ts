@@ -1,95 +1,116 @@
 "use client";
 
+import {
+  getPreferredOutputType,
+  throwIfImageProcessingAborted,
+  validateCanvasDimensions,
+  validateImageDimensions,
+} from "./imageSafety";
+
 export interface TransformOptions {
   rotate?: number;
   flip?: "horizontal" | "vertical";
+  signal?: AbortSignal;
 }
 
 function loadImage(
-  source: File | Blob
+  source: File | Blob,
+  signal?: AbortSignal
 ): Promise<HTMLImageElement> {
+  throwIfImageProcessingAborted(signal);
+
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(source);
     const image = new Image();
 
-    image.onload = () => {
+    const cleanup = () => {
       URL.revokeObjectURL(url);
-      resolve(image);
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    const onAbort = () => {
+      cleanup();
+      reject(new DOMException("Processing cancelled.", "AbortError"));
+    };
+
+    image.onload = () => {
+      cleanup();
+      try {
+        throwIfImageProcessingAborted(signal);
+        validateImageDimensions(
+          image.naturalWidth,
+          image.naturalHeight
+        );
+        resolve(image);
+      } catch (error) {
+        reject(error);
+      }
     };
 
     image.onerror = () => {
-      URL.revokeObjectURL(url);
+      cleanup();
       reject(new Error("Unable to load image."));
     };
 
+    signal?.addEventListener("abort", onAbort, { once: true });
     image.src = url;
   });
 }
 
 function canvasToBlob(
   canvas: HTMLCanvasElement,
-  type: "image/jpeg" | "image/png" | "image/webp" = "image/png",
+  type: "image/jpeg" | "image/png" | "image/webp",
   quality = 0.92
 ): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
         if (!blob) {
-          reject(
-            new Error("Unable to create image.")
-          );
+          reject(new Error("Unable to create image."));
           return;
         }
-
         resolve(blob);
       },
       type,
-      quality
+      type === "image/png" ? undefined : quality
     );
   });
 }
 
 export async function createCanvasFromImage(
-  source: File | Blob
+  source: File | Blob,
+  signal?: AbortSignal
 ) {
-  const image = await loadImage(source);
+  const image = await loadImage(source, signal);
+  validateCanvasDimensions(
+    image.naturalWidth,
+    image.naturalHeight
+  );
 
-  const canvas =
-    document.createElement("canvas");
-
+  const canvas = document.createElement("canvas");
   canvas.width = image.naturalWidth;
   canvas.height = image.naturalHeight;
 
   const ctx = canvas.getContext("2d");
 
   if (!ctx) {
-    throw new Error(
-      "Canvas is not supported."
-    );
+    throw new Error("Canvas is not supported.");
   }
 
+  throwIfImageProcessingAborted(signal);
   ctx.drawImage(image, 0, 0);
 
-  return {
-    canvas,
-    ctx,
-    image,
-  };
+  return { canvas, ctx, image };
 }
-
-/* ==========================================
-   ROTATE / FLIP
-========================================== */
 
 export async function transformImage(
   source: File | Blob,
   options: TransformOptions
 ): Promise<Blob> {
-  const image = await loadImage(source);
+  const image = await loadImage(source, options.signal);
 
   const rotation =
-    ((options.rotate ?? 0) % 360 + 360) %
-    360;
+    ((options.rotate ?? 0) % 360 + 360) % 360;
 
   const horizontalFlip =
     options.flip === "horizontal";
@@ -98,37 +119,31 @@ export async function transformImage(
     options.flip === "vertical";
 
   const rotated =
-    rotation === 90 ||
-    rotation === 270;
+    rotation === 90 || rotation === 270;
 
-  const canvas =
-    document.createElement("canvas");
-
-  canvas.width = rotated
+  const width = rotated
     ? image.naturalHeight
     : image.naturalWidth;
 
-  canvas.height = rotated
+  const height = rotated
     ? image.naturalWidth
     : image.naturalHeight;
+
+  validateCanvasDimensions(width, height);
+  throwIfImageProcessingAborted(options.signal);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
 
   const ctx = canvas.getContext("2d");
 
   if (!ctx) {
-    throw new Error(
-      "Canvas is not supported."
-    );
+    throw new Error("Canvas is not supported.");
   }
 
-  ctx.translate(
-    canvas.width / 2,
-    canvas.height / 2
-  );
-
-  ctx.rotate(
-    (rotation * Math.PI) / 180
-  );
-
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((rotation * Math.PI) / 180);
   ctx.scale(
     horizontalFlip ? -1 : 1,
     verticalFlip ? -1 : 1
@@ -140,37 +155,32 @@ export async function transformImage(
     -image.naturalHeight / 2
   );
 
+  throwIfImageProcessingAborted(options.signal);
+
   return canvasToBlob(
     canvas,
-    "image/png"
+    getPreferredOutputType(source),
+    0.92
   );
 }
 
-/* ==========================================
-   SHARPEN
-========================================== */
-
 export async function sharpenCanvas(
   source: File | Blob,
-  strength = 1
+  strength = 1,
+  signal?: AbortSignal
 ): Promise<Blob> {
   const { canvas, ctx } =
-    await createCanvasFromImage(
-      source
-    );
+    await createCanvasFromImage(source, signal);
 
-  const imageData =
-    ctx.getImageData(
-      0,
-      0,
-      canvas.width,
-      canvas.height
-    );
+  const imageData = ctx.getImageData(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
 
   const src = imageData.data;
-  const output = new Uint8ClampedArray(
-    src
-  );
+  const output = new Uint8ClampedArray(src);
 
   const amount = Math.min(
     1,
@@ -179,168 +189,114 @@ export async function sharpenCanvas(
 
   const width = canvas.width;
   const height = canvas.height;
+  let processed = 0;
 
-  for (
-    let y = 1;
-    y < height - 1;
-    y++
-  ) {
-    for (
-      let x = 1;
-      x < width - 1;
-      x++
-    ) {
-      const index =
-        (y * width + x) * 4;
+  for (let y = 1; y < height - 1; y++) {
+    throwIfImageProcessingAborted(signal);
+
+    for (let x = 1; x < width - 1; x++) {
+      const index = (y * width + x) * 4;
 
       for (let channel = 0; channel < 3; channel++) {
-        const center =
-          src[index + channel];
-
+        const center = src[index + channel];
         const top =
-          src[
-            ((y - 1) * width + x) *
-              4 +
-              channel
-          ];
-
+          src[((y - 1) * width + x) * 4 + channel];
         const bottom =
-          src[
-            ((y + 1) * width + x) *
-              4 +
-              channel
-          ];
-
+          src[((y + 1) * width + x) * 4 + channel];
         const left =
-          src[
-            (y * width + x - 1) *
-              4 +
-              channel
-          ];
-
+          src[(y * width + x - 1) * 4 + channel];
         const right =
-          src[
-            (y * width + x + 1) *
-              4 +
-              channel
-          ];
+          src[(y * width + x + 1) * 4 + channel];
 
         const sharpened =
           center * (1 + 4 * amount) -
-          (top +
-            bottom +
-            left +
-            right) *
-            amount;
+          (top + bottom + left + right) * amount;
 
-        output[index + channel] =
-          Math.max(
-            0,
-            Math.min(
-              255,
-              sharpened
-            )
-          );
+        output[index + channel] = Math.max(
+          0,
+          Math.min(255, sharpened)
+        );
+      }
+
+      processed += 1;
+
+      if (processed % 100_000 === 0) {
+        throwIfImageProcessingAborted(signal);
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, 0)
+        );
       }
     }
   }
 
+  throwIfImageProcessingAborted(signal);
   imageData.data.set(output);
-
-  ctx.putImageData(
-    imageData,
-    0,
-    0
-  );
+  ctx.putImageData(imageData, 0, 0);
 
   return canvasToBlob(
     canvas,
-    "image/png"
+    getPreferredOutputType(source),
+    0.92
   );
 }
-
-/* ==========================================
-   BORDER
-========================================== */
 
 export async function addBorder(
   source: File | Blob,
   borderSize = 10,
-  borderColor = "#000000"
+  borderColor = "#000000",
+  signal?: AbortSignal
 ): Promise<Blob> {
-  const image = await loadImage(source);
+  const image = await loadImage(source, signal);
+  const size = Math.max(0, Math.round(borderSize));
 
-  const size = Math.max(
-    0,
-    Math.round(borderSize)
-  );
+  const width = image.naturalWidth + size * 2;
+  const height = image.naturalHeight + size * 2;
 
-  const canvas =
-    document.createElement("canvas");
+  validateCanvasDimensions(width, height);
 
-  canvas.width =
-    image.naturalWidth + size * 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
 
-  canvas.height =
-    image.naturalHeight + size * 2;
-
-  const ctx =
-    canvas.getContext("2d");
+  const ctx = canvas.getContext("2d");
 
   if (!ctx) {
-    throw new Error(
-      "Canvas is not supported."
-    );
+    throw new Error("Canvas is not supported.");
   }
 
-  ctx.fillStyle =
-    borderColor;
+  throwIfImageProcessingAborted(signal);
 
-  ctx.fillRect(
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
-
-  ctx.drawImage(
-    image,
-    size,
-    size
-  );
+  ctx.fillStyle = borderColor;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, size, size);
 
   return canvasToBlob(
     canvas,
-    "image/png"
+    getPreferredOutputType(source),
+    0.92
   );
 }
 
-/* ==========================================
-   ROUNDED CORNERS
-========================================== */
-
 export async function roundedCorners(
   source: File | Blob,
-  radius = 30
+  radius = 30,
+  signal?: AbortSignal
 ): Promise<Blob> {
-  const image = await loadImage(source);
+  const image = await loadImage(source, signal);
 
-  const canvas =
-    document.createElement("canvas");
+  validateCanvasDimensions(
+    image.naturalWidth,
+    image.naturalHeight
+  );
 
-  canvas.width =
-    image.naturalWidth;
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
 
-  canvas.height =
-    image.naturalHeight;
-
-  const ctx =
-    canvas.getContext("2d");
+  const ctx = canvas.getContext("2d");
 
   if (!ctx) {
-    throw new Error(
-      "Canvas is not supported."
-    );
+    throw new Error("Canvas is not supported.");
   }
 
   const r = Math.min(
@@ -350,7 +306,6 @@ export async function roundedCorners(
   );
 
   ctx.beginPath();
-
   ctx.moveTo(r, 0);
   ctx.lineTo(canvas.width - r, 0);
   ctx.quadraticCurveTo(
@@ -359,49 +314,31 @@ export async function roundedCorners(
     canvas.width,
     r
   );
-
   ctx.lineTo(
     canvas.width,
     canvas.height - r
   );
-
   ctx.quadraticCurveTo(
     canvas.width,
     canvas.height,
     canvas.width - r,
     canvas.height
   );
-
   ctx.lineTo(r, canvas.height);
-
   ctx.quadraticCurveTo(
     0,
     canvas.height,
     0,
     canvas.height - r
   );
-
   ctx.lineTo(0, r);
-
-  ctx.quadraticCurveTo(
-    0,
-    0,
-    r,
-    0
-  );
-
+  ctx.quadraticCurveTo(0, 0, r, 0);
   ctx.closePath();
-
   ctx.clip();
 
-  ctx.drawImage(
-    image,
-    0,
-    0
-  );
+  throwIfImageProcessingAborted(signal);
+  ctx.drawImage(image, 0, 0);
 
-  return canvasToBlob(
-    canvas,
-    "image/png"
-  );
+  // Rounded corners require alpha, so PNG is the safe output.
+  return canvasToBlob(canvas, "image/png");
 }

@@ -39,57 +39,33 @@ interface DecodedImage {
   close?: () => void;
 }
 
-function throwIfAborted(
-  signal?: AbortSignal
-): void {
-  if (signal?.aborted) {
-    throw new DOMException(
-      "Processing cancelled.",
-      "AbortError"
+import {
+  getPreferredOutputType,
+  throwIfImageProcessingAborted,
+  validateCanvasDimensions,
+  validateImageDimensions,
+} from "./imageSafety";
+
+function yieldToBrowser(signal?: AbortSignal): Promise<void> {
+  throwIfImageProcessingAborted(signal);
+
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, 0);
+
+    if (!signal) return;
+
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Processing cancelled.", "AbortError"));
+      },
+      { once: true }
     );
-  }
+  });
 }
 
-function yieldToBrowser(
-  signal?: AbortSignal
-): Promise<void> {
-  throwIfAborted(signal);
-
-  return new Promise(
-    (resolve, reject) => {
-      const timer =
-        window.setTimeout(
-          resolve,
-          0
-        );
-
-      if (!signal) {
-        return;
-      }
-
-      signal.addEventListener(
-        "abort",
-        () => {
-          window.clearTimeout(
-            timer
-          );
-
-          reject(
-            new DOMException(
-              "Processing cancelled.",
-              "AbortError"
-            )
-          );
-        },
-        { once: true }
-      );
-    }
-  );
-}
-
-function getOutputType(
-  options: CompressionOptions
-): OutputFormat {
+function getOutputType(options: CompressionOptions): OutputFormat {
   return (
     options.outputType ??
     options.outputFormat ??
@@ -112,29 +88,21 @@ function canvasToBlob(
   type: OutputFormat,
   quality: number
 ): Promise<Blob> {
-  return new Promise(
-    (resolve, reject) => {
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) {
-            reject(
-              new Error(
-                "Unable to create image."
-              )
-            );
-
-            return;
-          }
-
-          resolve(blob);
-        },
-        type,
-        type === "image/png"
-          ? undefined
-          : quality
-      );
-    }
-  );
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("Unable to create image."));
+          return;
+        }
+        resolve(blob);
+      },
+      type,
+      // PNG is lossless in the browser canvas API; quality is intentionally
+      // omitted so the UI never implies JPEG-style PNG quality control.
+      type === "image/png" ? undefined : quality
+    );
+  });
 }
 
 async function decodeImage(
@@ -143,101 +111,61 @@ async function decodeImage(
   height?: number,
   signal?: AbortSignal
 ): Promise<DecodedImage> {
-  throwIfAborted(signal);
+  throwIfImageProcessingAborted(signal);
 
-  /*
-   * Prefer createImageBitmap because
-   * the browser can decode directly at
-   * the requested working resolution.
-   */
-  if (
-    typeof createImageBitmap ===
-    "function"
-  ) {
+  if (typeof createImageBitmap === "function") {
     try {
       const bitmap =
         width && height
-          ? await createImageBitmap(
-              file,
-              {
-                resizeWidth:
-                  width,
-                resizeHeight:
-                  height,
-                resizeQuality:
-                  "high",
-              }
-            )
-          : await createImageBitmap(
-              file
-            );
+          ? await createImageBitmap(file, {
+              resizeWidth: width,
+              resizeHeight: height,
+              resizeQuality: "high",
+            })
+          : await createImageBitmap(file);
 
-      throwIfAborted(signal);
+      throwIfImageProcessingAborted(signal);
+      validateImageDimensions(bitmap.width, bitmap.height);
 
       return {
         source: bitmap,
         width: bitmap.width,
         height: bitmap.height,
-        close: () =>
-          bitmap.close(),
+        close: () => bitmap.close(),
       };
     } catch (error) {
-      if (signal?.aborted) {
-        throw error;
-      }
-
-      /*
-       * Fall back to <img> for browsers
-       * with incomplete ImageBitmap support.
-       */
+      if (signal?.aborted) throw error;
+      // Fall through to <img> for browser compatibility.
     }
   }
 
-  const url =
-    URL.createObjectURL(file);
+  const url = URL.createObjectURL(file);
 
   try {
-    const image =
-      await new Promise<HTMLImageElement>(
-        (
-          resolve,
-          reject
-        ) => {
-          const element =
-            new Image();
+    const image = await new Promise<HTMLImageElement>(
+      (resolve, reject) => {
+        const element = new Image();
 
-          element.onload =
-            () =>
-              resolve(
-                element
-              );
+        element.onload = () => resolve(element);
+        element.onerror = () =>
+          reject(new Error("Unable to decode image."));
+        element.src = url;
+      }
+    );
 
-          element.onerror =
-            () =>
-              reject(
-                new Error(
-                  "Unable to decode image."
-                )
-              );
-
-          element.src =
-            url;
-        }
-      );
-
-    throwIfAborted(signal);
+    throwIfImageProcessingAborted(signal);
+    validateImageDimensions(
+      image.naturalWidth,
+      image.naturalHeight
+    );
 
     return {
       source: image,
-      width:
-        image.naturalWidth,
-      height:
-        image.naturalHeight,
+      width: image.naturalWidth,
+      height: image.naturalHeight,
     };
   } finally {
-    URL.revokeObjectURL(
-      url
-    );
+    URL.revokeObjectURL(url);
   }
 }
 
@@ -246,76 +174,28 @@ function calculateDimensions(
   height: number,
   maxWidth?: number,
   maxHeight?: number
-): {
-  width: number;
-  height: number;
-} {
+): { width: number; height: number } {
   let scale = 1;
 
-  if (
-    maxWidth &&
-    width > maxWidth
-  ) {
-    scale = Math.min(
-      scale,
-      maxWidth / width
-    );
+  if (maxWidth && width > maxWidth) {
+    scale = Math.min(scale, maxWidth / width);
   }
 
-  if (
-    maxHeight &&
-    height > maxHeight
-  ) {
-    scale = Math.min(
-      scale,
-      maxHeight / height
-    );
+  if (maxHeight && height > maxHeight) {
+    scale = Math.min(scale, maxHeight / height);
   }
 
   return {
-    width: Math.max(
-      1,
-      Math.round(
-        width * scale
-      )
-    ),
-
-    height: Math.max(
-      1,
-      Math.round(
-        height * scale
-      )
-    ),
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
   };
 }
 
-/*
- * Target-size resolution heuristic.
- *
- * Smaller targets get smaller working
- * resolutions because there is no benefit
- * in encoding a 7000px image when the
- * final file must be approximately 50 KB.
- */
-function getTargetMaxDimension(
-  targetKB: number
-): number {
-  if (targetKB <= 50) {
-    return 1000;
-  }
-
-  if (targetKB <= 100) {
-    return 1200;
-  }
-
-  if (targetKB <= 200) {
-    return 1600;
-  }
-
-  if (targetKB <= 500) {
-    return 2200;
-  }
-
+function getTargetMaxDimension(targetKB: number): number {
+  if (targetKB <= 50) return 1000;
+  if (targetKB <= 100) return 1200;
+  if (targetKB <= 200) return 1600;
+  if (targetKB <= 500) return 2200;
   return 2800;
 }
 
@@ -323,51 +203,33 @@ function getResolutionCandidates(
   width: number,
   height: number,
   targetKB: number
-): Array<{
-  width: number;
-  height: number;
-}> {
-  const maxDimension =
-    getTargetMaxDimension(
-      targetKB
+): Array<{ width: number; height: number }> {
+  const maxDimension = getTargetMaxDimension(targetKB);
+  const ratios = [1, 0.78, 0.58, 0.42];
+  const candidates: Array<{ width: number; height: number }> = [];
+
+  for (const ratio of ratios) {
+    const dimensions = calculateDimensions(
+      width,
+      height,
+      maxDimension * ratio,
+      maxDimension * ratio
     );
 
-  const ratios = [
-    1,
-    0.78,
-    0.58,
-    0.42,
-  ];
+    validateCanvasDimensions(
+      dimensions.width,
+      dimensions.height,
+      "Working image"
+    );
 
-  const candidates: Array<{
-    width: number;
-    height: number;
-  }> = [];
-
-  for (
-    const ratio of ratios
-  ) {
-    const dimensions =
-      calculateDimensions(
-        width,
-        height,
-        maxDimension * ratio,
-        maxDimension * ratio
-      );
-
-    const exists =
-      candidates.some(
+    if (
+      !candidates.some(
         (candidate) =>
-          candidate.width ===
-            dimensions.width &&
-          candidate.height ===
-            dimensions.height
-      );
-
-    if (!exists) {
-      candidates.push(
-        dimensions
-      );
+          candidate.width === dimensions.width &&
+          candidate.height === dimensions.height
+      )
+    ) {
+      candidates.push(dimensions);
     }
   }
 
@@ -382,44 +244,30 @@ async function renderAtSize(
   quality: number,
   signal?: AbortSignal
 ): Promise<Blob> {
-  throwIfAborted(signal);
+  throwIfImageProcessingAborted(signal);
+  validateCanvasDimensions(width, height);
 
-  const decoded =
-    await decodeImage(
-      file,
-      width,
-      height,
-      signal
-    );
+  const decoded = await decodeImage(
+    file,
+    width,
+    height,
+    signal
+  );
 
-  const canvas =
-    document.createElement(
-      "canvas"
-    );
+  const canvas = document.createElement("canvas");
+  validateCanvasDimensions(decoded.width, decoded.height);
+  canvas.width = decoded.width;
+  canvas.height = decoded.height;
 
-  canvas.width =
-    decoded.width;
-
-  canvas.height =
-    decoded.height;
-
-  const context =
-    canvas.getContext("2d");
+  const context = canvas.getContext("2d");
 
   if (!context) {
     decoded.close?.();
-
-    throw new Error(
-      "Canvas is not supported by this browser."
-    );
+    throw new Error("Canvas is not supported by this browser.");
   }
 
-  context.imageSmoothingEnabled =
-    true;
-
-  context.imageSmoothingQuality =
-    "high";
-
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
   context.drawImage(
     decoded.source,
     0,
@@ -428,91 +276,67 @@ async function renderAtSize(
     decoded.height
   );
 
-  /*
-   * Release ImageBitmap immediately.
-   */
   decoded.close?.();
 
-  const blob =
-    await canvasToBlob(
-      canvas,
-      type,
-      quality
-    );
+  throwIfImageProcessingAborted(signal);
 
-  /*
-   * Release canvas backing memory.
-   */
+  const blob = await canvasToBlob(
+    canvas,
+    type,
+    quality
+  );
+
   canvas.width = 1;
   canvas.height = 1;
 
-  throwIfAborted(signal);
-
+  throwIfImageProcessingAborted(signal);
   return blob;
 }
 
-/**
- * Normal image compression.
- *
- * Existing callers remain compatible.
- */
 export async function compressImage(
   file: File | Blob,
   options: CompressionOptions = {}
 ): Promise<Blob> {
-  if (
-    !file.type.startsWith(
-      "image/"
-    )
-  ) {
-    throw new Error(
-      "Please select a valid image file."
-    );
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Please select a valid image file.");
   }
 
-  const quality =
-    Math.min(
-      MAX_QUALITY,
-      Math.max(
-        MIN_QUALITY,
-        options.quality ?? 0.8
-      )
-    );
-
-  const outputType =
-    getOutputType(options);
-
-  options.onProgress?.(
-    "reading"
+  const quality = Math.min(
+    MAX_QUALITY,
+    Math.max(MIN_QUALITY, options.quality ?? 0.8)
   );
 
-  const decoded =
-    await decodeImage(
-      file,
-      undefined,
-      undefined,
-      options.signal
-    );
+  const outputType = getOutputType(options);
 
-  const dimensions =
-    calculateDimensions(
-      decoded.width,
-      decoded.height,
-      options.maxWidth,
-      options.maxHeight
-    );
+  options.onProgress?.("reading");
 
-  decoded.close?.();
-
-  options.onProgress?.(
-    "optimizing-resolution"
-  );
-
-  await yieldToBrowser(
+  const decoded = await decodeImage(
+    file,
+    undefined,
+    undefined,
     options.signal
   );
 
-  return renderAtSize(
+  const dimensions = calculateDimensions(
+    decoded.width,
+    decoded.height,
+    options.maxWidth,
+    options.maxHeight
+  );
+
+  validateCanvasDimensions(
+    dimensions.width,
+    dimensions.height
+  );
+
+  decoded.close?.();
+
+  options.onProgress?.("optimizing-resolution");
+  await yieldToBrowser(options.signal);
+
+  options.onProgress?.("compressing");
+
+  const result = await renderAtSize(
     file,
     dimensions.width,
     dimensions.height,
@@ -520,351 +344,234 @@ export async function compressImage(
     quality,
     options.signal
   );
+
+  options.onProgress?.("complete");
+  return result;
 }
 
-/**
- * Target-size compression.
- *
- * Supports both:
- *
- * compressToTargetSize(file, {
- *   targetKB: 100
- * })
- *
- * and the older positional form:
- *
- * compressToTargetSize(
- *   file,
- *   100,
- *   "image/jpeg"
- * )
- */
 export async function compressToTargetSize(
   file: File | Blob,
-  optionsOrTarget:
-    | TargetCompressionOptions
-    | number,
-  legacyOutputType:
-    OutputFormat =
-      "image/jpeg"
+  optionsOrTarget: TargetCompressionOptions | number,
+  legacyOutputType: OutputFormat = "image/jpeg"
 ): Promise<Blob> {
-  const options:
-    TargetCompressionOptions =
-    typeof optionsOrTarget ===
-    "number"
+  const options: TargetCompressionOptions =
+    typeof optionsOrTarget === "number"
       ? {
-          targetKB:
-            optionsOrTarget,
-          outputType:
-            legacyOutputType,
+          targetKB: optionsOrTarget,
+          outputType: legacyOutputType,
         }
       : optionsOrTarget;
 
-  if (
-    !Number.isFinite(
-      options.targetKB
-    ) ||
-    options.targetKB <= 0
-  ) {
-    throw new Error(
-      "Target size must be greater than zero."
-    );
+  if (!Number.isFinite(options.targetKB) || options.targetKB <= 0) {
+    throw new Error("Target size must be greater than zero.");
   }
 
-  if (
-    !file.type.startsWith(
-      "image/"
-    )
-  ) {
-    throw new Error(
-      "Please select a valid image file."
-    );
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Please select a valid image file.");
   }
 
-  const targetBytes =
-    Math.floor(
-      options.targetKB * 1024
-    );
-
-  const outputType =
-    getTargetOutputType(
-      options
-    );
+  const targetBytes = Math.floor(options.targetKB * 1024);
+  const outputType = getTargetOutputType(options);
 
   /*
-   * Already small enough.
-   * Avoid decoding and re-encoding.
+   * Returning the original file is only safe when it already has the
+   * requested format. Otherwise the requested output format would be
+   * silently ignored.
    */
   if (
-    file.size <= targetBytes
+    file.size <= targetBytes &&
+    file.type === outputType
   ) {
-    options.onProgress?.(
-      "complete"
-    );
-
+    options.onProgress?.("complete");
     return file;
   }
 
-  options.onProgress?.(
-    "reading"
+  options.onProgress?.("reading");
+
+  const original = await decodeImage(
+    file,
+    undefined,
+    undefined,
+    options.signal
   );
 
-  const original =
-    await decodeImage(
-      file,
-      undefined,
-      undefined,
-      options.signal
-    );
-
-  const originalWidth =
-    original.width;
-
-  const originalHeight =
-    original.height;
-
+  const originalWidth = original.width;
+  const originalHeight = original.height;
   original.close?.();
 
-  const candidates =
-    getResolutionCandidates(
-      originalWidth,
-      originalHeight,
-      options.targetKB
-    );
+  const candidates = getResolutionCandidates(
+    originalWidth,
+    originalHeight,
+    options.targetKB
+  );
 
-  for (
-    const dimensions of candidates
-  ) {
-    throwIfAborted(
-      options.signal
-    );
+  for (const dimensions of candidates) {
+    throwIfImageProcessingAborted(options.signal);
+    options.onProgress?.("optimizing-resolution");
+    await yieldToBrowser(options.signal);
 
-    options.onProgress?.(
-      "optimizing-resolution"
-    );
+    let low = MIN_QUALITY;
+    let high = MAX_QUALITY;
+    let bestUnderTarget: Blob | null = null;
 
-    await yieldToBrowser(
-      options.signal
-    );
-
-    /*
-     * Binary search for the highest
-     * quality that fits the target.
-     */
-    let low =
-      MIN_QUALITY;
-
-    let high =
-      MAX_QUALITY;
-
-    let bestUnderTarget:
-      Blob | null = null;
-
-    options.onProgress?.(
-      "compressing"
-    );
+    options.onProgress?.("compressing");
 
     for (
       let attempt = 0;
-      attempt <
-        QUALITY_ATTEMPTS;
+      attempt < QUALITY_ATTEMPTS;
       attempt += 1
     ) {
-      throwIfAborted(
-        options.signal
-      );
+      throwIfImageProcessingAborted(options.signal);
 
-      /*
-       * First attempt uses maximum
-       * reasonable quality.
-       */
       const quality =
         attempt === 0
           ? MAX_QUALITY
           : (low + high) / 2;
 
-      const blob =
-        await renderAtSize(
-          file,
-          dimensions.width,
-          dimensions.height,
-          outputType,
-          quality,
-          options.signal
-        );
+      const blob = await renderAtSize(
+        file,
+        dimensions.width,
+        dimensions.height,
+        outputType,
+        quality,
+        options.signal
+      );
 
-      if (
-        blob.size <=
-        targetBytes
-      ) {
-        /*
-         * Keep the highest quality
-         * successful result.
-         */
-        bestUnderTarget =
-          blob;
-
+      if (blob.size <= targetBytes) {
+        bestUnderTarget = blob;
         low = quality;
       } else {
         high = quality;
       }
 
-      /*
-       * Give React/browser a chance
-       * to update the UI.
-       */
-      await yieldToBrowser(
-        options.signal
-      );
+      await yieldToBrowser(options.signal);
     }
 
-    if (
-      bestUnderTarget
-    ) {
-      options.onProgress?.(
-        "finalizing"
-      );
-
-      await yieldToBrowser(
-        options.signal
-      );
-
-      options.onProgress?.(
-        "complete"
-      );
-
+    if (bestUnderTarget) {
+      options.onProgress?.("finalizing");
+      await yieldToBrowser(options.signal);
+      options.onProgress?.("complete");
       return bestUnderTarget;
     }
   }
 
-  throwIfAborted(
-    options.signal
-  );
-
+  throwIfImageProcessingAborted(options.signal);
   throw new Error(
     `Unable to reach ${options.targetKB} KB while maintaining reasonable image quality. Try a larger target such as 100 KB or 200 KB.`
   );
 }
 
-export async function resizeByWidth(
+async function getResizeDimensions(
   file: File | Blob,
-  width: number
-): Promise<Blob> {
-  if (
-    !Number.isFinite(width) ||
-    width <= 0
-  ) {
-    throw new Error(
-      "Width must be greater than zero."
-    );
-  }
+  width?: number,
+  height?: number,
+  signal?: AbortSignal
+): Promise<{ width: number; height: number }> {
+  const image = await decodeImage(
+    file,
+    undefined,
+    undefined,
+    signal
+  );
 
-  const image =
-    await decodeImage(file);
-
-  const height =
-    Math.max(
-      1,
-      Math.round(
-        image.height *
-          (width /
-            image.width)
-      )
-    );
+  const result = calculateDimensions(
+    image.width,
+    image.height,
+    width,
+    height
+  );
 
   image.close?.();
+  validateCanvasDimensions(result.width, result.height);
+  return result;
+}
+
+export async function resizeByWidth(
+  file: File | Blob,
+  width: number,
+  signal?: AbortSignal
+): Promise<Blob> {
+  if (!Number.isFinite(width) || width <= 0) {
+    throw new Error("Width must be greater than zero.");
+  }
+
+  const dimensions = await getResizeDimensions(
+    file,
+    width,
+    undefined,
+    signal
+  );
 
   return renderAtSize(
     file,
-    Math.round(width),
-    height,
-    "image/jpeg",
-    0.9
+    dimensions.width,
+    dimensions.height,
+    getPreferredOutputType(file),
+    0.9,
+    signal
   );
 }
 
 export async function resizeByHeight(
   file: File | Blob,
-  height: number
+  height: number,
+  signal?: AbortSignal
 ): Promise<Blob> {
-  if (
-    !Number.isFinite(height) ||
-    height <= 0
-  ) {
-    throw new Error(
-      "Height must be greater than zero."
-    );
+  if (!Number.isFinite(height) || height <= 0) {
+    throw new Error("Height must be greater than zero.");
   }
 
-  const image =
-    await decodeImage(file);
-
-  const width =
-    Math.max(
-      1,
-      Math.round(
-        image.width *
-          (height /
-            image.height)
-      )
-    );
-
-  image.close?.();
+  const dimensions = await getResizeDimensions(
+    file,
+    undefined,
+    height,
+    signal
+  );
 
   return renderAtSize(
     file,
-    width,
-    Math.round(height),
-    "image/jpeg",
-    0.9
+    dimensions.width,
+    dimensions.height,
+    getPreferredOutputType(file),
+    0.9,
+    signal
   );
 }
 
 export async function resizeByPercentage(
   file: File | Blob,
-  percentage: number
+  percentage: number,
+  signal?: AbortSignal
 ): Promise<Blob> {
-  if (
-    !Number.isFinite(
-      percentage
-    ) ||
-    percentage <= 0
-  ) {
-    throw new Error(
-      "Percentage must be greater than zero."
-    );
+  if (!Number.isFinite(percentage) || percentage <= 0) {
+    throw new Error("Percentage must be greater than zero.");
   }
 
-  const image =
-    await decodeImage(file);
+  const image = await decodeImage(
+    file,
+    undefined,
+    undefined,
+    signal
+  );
 
-  const width =
-    Math.max(
-      1,
-      Math.round(
-        image.width *
-          percentage /
-          100
-      )
-    );
-
-  const height =
-    Math.max(
-      1,
-      Math.round(
-        image.height *
-          percentage /
-          100
-      )
-    );
+  const width = Math.max(
+    1,
+    Math.round(image.width * percentage / 100)
+  );
+  const height = Math.max(
+    1,
+    Math.round(image.height * percentage / 100)
+  );
 
   image.close?.();
+  validateCanvasDimensions(width, height);
 
   return renderAtSize(
     file,
     width,
     height,
-    "image/jpeg",
-    0.9
+    getPreferredOutputType(file),
+    0.9,
+    signal
   );
 }

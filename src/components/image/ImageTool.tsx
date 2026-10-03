@@ -44,6 +44,12 @@ import {
 } from "@/engine/image/imageUtilityEngine";
 
 import { imageTools } from "@/config/imageTools";
+import {
+  getPreferredOutputType,
+  throwIfImageProcessingAborted,
+  validateCanvasDimensions,
+  validateImageDimensions,
+} from "@/engine/image/imageSafety";
 import type { ImageToolDefinition } from "@/types/image";
 
 interface ImageToolProps {
@@ -172,22 +178,51 @@ function getOutputExtension(type: string): string {
 }
 
 function loadImageFromBlob(
-  blob: Blob
+  blob: Blob,
+  signal?: AbortSignal
 ): Promise<HTMLImageElement> {
+  throwIfImageProcessingAborted(signal);
+
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
 
     const image = document.createElement("img");
 
-    image.onload = () => {
+    const cleanup = () => {
       URL.revokeObjectURL(url);
-      resolve(image);
+      signal?.removeEventListener("abort", onAbort);
+    };
+
+    const onAbort = () => {
+      cleanup();
+      reject(
+        new DOMException(
+          "Processing cancelled.",
+          "AbortError"
+        )
+      );
+    };
+
+    image.onload = () => {
+      cleanup();
+      try {
+        throwIfImageProcessingAborted(signal);
+        resolve(image);
+      } catch (error) {
+        reject(error);
+      }
     };
 
     image.onerror = () => {
-      URL.revokeObjectURL(url);
+      cleanup();
       reject(new Error("Unable to load image."));
     };
+
+    signal?.addEventListener(
+      "abort",
+      onAbort,
+      { once: true }
+    );
 
     image.src = url;
   });
@@ -234,8 +269,17 @@ async function processCanvasImage(
     | "pixelate"
     | "grayscale"
     | "black-white"
+,
+  signal?: AbortSignal
 ): Promise<Blob> {
-  const image = await loadImageFromBlob(file);
+  throwIfImageProcessingAborted(signal);
+  const image = await loadImageFromBlob(file, signal);
+  validateImageDimensions(image.naturalWidth, image.naturalHeight);
+
+  validateCanvasDimensions(
+    image.naturalWidth,
+    image.naturalHeight
+  );
 
   const canvas = document.createElement("canvas");
 
@@ -253,6 +297,8 @@ async function processCanvasImage(
   }
 
   if (mode === "blur") {
+    throwIfImageProcessingAborted(signal);
+
     const radius = Math.max(
       1,
       Math.round(settings.effectValue)
@@ -262,7 +308,7 @@ async function processCanvasImage(
     ctx.drawImage(image, 0, 0);
     ctx.filter = "none";
 
-    return canvasToBlob(canvas, "image/png");
+    return canvasToBlob(canvas, getPreferredOutputType(file));
   }
 
   if (mode === "pixelate") {
@@ -284,6 +330,7 @@ async function processCanvasImage(
       Math.floor(canvas.height / size)
     );
 
+    validateCanvasDimensions(smallWidth, smallHeight, "Pixelation working image");
     smallCanvas.width = smallWidth;
     smallCanvas.height = smallHeight;
 
@@ -296,6 +343,7 @@ async function processCanvasImage(
       );
     }
 
+    throwIfImageProcessingAborted(signal);
     smallCtx.imageSmoothingEnabled = false;
 
     smallCtx.drawImage(
@@ -320,9 +368,11 @@ async function processCanvasImage(
       canvas.height
     );
 
-    return canvasToBlob(canvas, "image/png");
+    throwIfImageProcessingAborted(signal);
+    return canvasToBlob(canvas, getPreferredOutputType(file));
   }
 
+  throwIfImageProcessingAborted(signal);
   ctx.drawImage(image, 0, 0);
 
   const imageData = ctx.getImageData(
@@ -333,12 +383,22 @@ async function processCanvasImage(
   );
 
   const data = imageData.data;
+  let processedPixels = 0;
 
   for (
     let i = 0;
     i < data.length;
     i += 4
   ) {
+    if (processedPixels % 100_000 === 0) {
+      throwIfImageProcessingAborted(signal);
+      if (processedPixels > 0) {
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, 0)
+        );
+      }
+    }
+    processedPixels += 1;
     let r = data[i];
     let g = data[i + 1];
     let b = data[i + 2];
@@ -532,6 +592,8 @@ async function processCanvasImage(
     );
   }
 
+  throwIfImageProcessingAborted(signal);
+
   ctx.putImageData(
     imageData,
     0,
@@ -540,7 +602,7 @@ async function processCanvasImage(
 
   return canvasToBlob(
     canvas,
-    "image/png"
+    getPreferredOutputType(file)
   );
 }
 
@@ -651,9 +713,6 @@ const abortControllerRef =
   }
   function cancelProcessing() {
     abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
-    setLoading(false);
-    setProcessingStage("idle");
     setError("Processing cancelled.");
   }
 
@@ -865,6 +924,8 @@ const abortControllerRef =
             {
               quality:
                 settings.quality / 100,
+              signal: controller.signal,
+              onProgress: setProcessingStage,
             }
           );
       }
@@ -939,6 +1000,8 @@ const abortControllerRef =
 
               outputType:
                 "image/png",
+              signal: controller.signal,
+              onProgress: setProcessingStage,
             }
           );
       }
@@ -978,6 +1041,8 @@ const abortControllerRef =
                 settings.width,
               maxHeight:
                 settings.height,
+              signal: controller.signal,
+              onProgress: setProcessingStage,
             }
           );
       }
@@ -989,7 +1054,8 @@ const abortControllerRef =
         output =
           await resizeByWidth(
             primaryFile,
-            settings.width
+            settings.width,
+            controller.signal
           );
       }
 
@@ -1000,7 +1066,8 @@ const abortControllerRef =
         output =
           await resizeByHeight(
             primaryFile,
-            settings.height
+            settings.height,
+            controller.signal
           );
       }
 
@@ -1011,7 +1078,8 @@ const abortControllerRef =
         output =
           await resizeByPercentage(
             primaryFile,
-            settings.percentage
+            settings.percentage,
+            controller.signal
           );
       }
 
@@ -1035,7 +1103,8 @@ const abortControllerRef =
                 settings.cropWidth,
               height:
                 settings.cropHeight,
-            }
+            },
+            controller.signal
           );
       }
 
@@ -1045,7 +1114,8 @@ const abortControllerRef =
       ) {
         output =
           await circularCrop(
-            primaryFile
+            primaryFile,
+            controller.signal
           );
       }
 
@@ -1065,6 +1135,7 @@ const abortControllerRef =
             {
               rotate:
                 settings.rotate,
+              signal: controller.signal,
             }
           );
       }
@@ -1079,6 +1150,7 @@ const abortControllerRef =
             {
               flip:
                 settings.flip,
+              signal: controller.signal,
             }
           );
       }
@@ -1096,7 +1168,8 @@ const abortControllerRef =
         output =
           await sharpenCanvas(
             primaryFile,
-            settings.effectValue
+            settings.effectValue,
+            controller.signal
           );
       }
 
@@ -1108,7 +1181,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "blur"
+            "blur",
+            controller.signal
           );
       }
 
@@ -1120,7 +1194,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "pixelate"
+            "pixelate",
+            controller.signal
           );
       }
 
@@ -1132,7 +1207,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "grayscale"
+            "grayscale",
+            controller.signal
           );
       }
 
@@ -1144,7 +1220,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "black-white"
+            "black-white",
+            controller.signal
           );
       }
 
@@ -1162,7 +1239,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "brightness"
+            "brightness",
+            controller.signal
           );
       }
 
@@ -1174,7 +1252,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "contrast"
+            "contrast",
+            controller.signal
           );
       }
 
@@ -1186,7 +1265,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "saturation"
+            "saturation",
+            controller.signal
           );
       }
 
@@ -1198,7 +1278,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "hue"
+            "hue",
+            controller.signal
           );
       }
 
@@ -1210,7 +1291,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "exposure"
+            "exposure",
+            controller.signal
           );
       }
 
@@ -1222,7 +1304,8 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "opacity"
+            "opacity",
+            controller.signal
           );
       }
 
@@ -1240,7 +1323,8 @@ const abortControllerRef =
           await addBorder(
             primaryFile,
             settings.borderSize,
-            settings.borderColor
+            settings.borderColor,
+            controller.signal
           );
       }
 
@@ -1251,7 +1335,8 @@ const abortControllerRef =
         output =
           await roundedCorners(
             primaryFile,
-            settings.radius
+            settings.radius,
+            controller.signal
           );
       }
 
@@ -1274,6 +1359,7 @@ const abortControllerRef =
                 settings.textSize,
               color:
                 settings.textColor,
+              signal: controller.signal,
             }
           );
       }
@@ -1290,6 +1376,7 @@ const abortControllerRef =
               opacity:
                 settings.watermarkOpacity /
                 100,
+              signal: controller.signal,
             }
           );
       }
@@ -1313,7 +1400,8 @@ const abortControllerRef =
         output =
           await overlayImages(
             files[0],
-            files[1]
+            files[1],
+            controller.signal
           );
       }
 
@@ -1335,7 +1423,8 @@ const abortControllerRef =
 
         output =
           await createCollage(
-            files
+            files,
+            controller.signal
           );
       }
 
@@ -1357,7 +1446,8 @@ const abortControllerRef =
 
         output =
           await mergeImages(
-            files
+            files,
+            controller.signal
           );
       }
 
@@ -1373,7 +1463,8 @@ const abortControllerRef =
       ) {
         outputs =
           await splitImage(
-            primaryFile
+            primaryFile,
+            controller.signal
           );
 
         if (!outputs.length) {
@@ -1441,7 +1532,9 @@ const abortControllerRef =
             {
               quality: 1,
               outputType:
-                "image/png",
+                getPreferredOutputType(primaryFile),
+              signal: controller.signal,
+              onProgress: setProcessingStage,
             }
           );
       }
@@ -1566,9 +1659,11 @@ const abortControllerRef =
           : "Something went wrong while processing the image."
       );
     } finally {
-      abortControllerRef.current = null;
-      setLoading(false);
-      setProcessingStage("idle");
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setLoading(false);
+        setProcessingStage("idle");
+      }
     }
   }
 
