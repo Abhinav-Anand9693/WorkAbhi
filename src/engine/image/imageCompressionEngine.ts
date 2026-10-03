@@ -40,6 +40,8 @@ interface DecodedImage {
 }
 
 import {
+  MAX_CANVAS_DIMENSION,
+  MAX_IMAGE_PIXELS,
   getPreferredOutputType,
   throwIfImageProcessingAborted,
   validateCanvasDimensions,
@@ -113,6 +115,17 @@ async function decodeImage(
 ): Promise<DecodedImage> {
   throwIfImageProcessingAborted(signal);
 
+  // When a target size is supplied, the source image itself may be larger
+  // than our safe canvas limit. The important safety boundary is the
+  // decoded working size, not the original source dimensions.
+  if (width && height) {
+    validateCanvasDimensions(
+      Math.round(width),
+      Math.round(height),
+      "Working image"
+    );
+  }
+
   if (typeof createImageBitmap === "function") {
     try {
       const bitmap =
@@ -154,6 +167,19 @@ async function decodeImage(
     );
 
     throwIfImageProcessingAborted(signal);
+
+    if (width && height) {
+      // createImageBitmap is unavailable/failed on this browser. Keep the
+      // original HTMLImageElement as the source but expose the requested
+      // safe working dimensions so renderAtSize never creates an oversized
+      // canvas.
+      return {
+        source: image,
+        width: Math.round(width),
+        height: Math.round(height),
+      };
+    }
+
     validateImageDimensions(
       image.naturalWidth,
       image.naturalHeight
@@ -189,6 +215,76 @@ function calculateDimensions(
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale)),
   };
+}
+
+function calculateSafeDimensions(
+  width: number,
+  height: number,
+  maxWidth?: number,
+  maxHeight?: number
+): { width: number; height: number } {
+  let scale = 1;
+
+  if (maxWidth && width > maxWidth) {
+    scale = Math.min(scale, maxWidth / width);
+  }
+
+  if (maxHeight && height > maxHeight) {
+    scale = Math.min(scale, maxHeight / height);
+  }
+
+  let safeWidth = width * scale;
+  let safeHeight = height * scale;
+
+  if (safeWidth > MAX_CANVAS_DIMENSION) {
+    const dimensionScale = MAX_CANVAS_DIMENSION / safeWidth;
+    safeWidth *= dimensionScale;
+    safeHeight *= dimensionScale;
+  }
+
+  const pixels = safeWidth * safeHeight;
+  if (pixels > MAX_IMAGE_PIXELS) {
+    const pixelScale = Math.sqrt(MAX_IMAGE_PIXELS / pixels);
+    safeWidth *= pixelScale;
+    safeHeight *= pixelScale;
+  }
+
+  return {
+    width: Math.max(1, Math.floor(safeWidth)),
+    height: Math.max(1, Math.floor(safeHeight)),
+  };
+}
+
+async function probeImageDimensions(
+  file: Blob,
+  signal?: AbortSignal
+): Promise<{ width: number; height: number }> {
+  throwIfImageProcessingAborted(signal);
+
+  const url = URL.createObjectURL(file);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () =>
+        reject(new Error("Unable to decode image."));
+      element.src = url;
+    });
+
+    throwIfImageProcessingAborted(signal);
+
+    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+      throw new Error("Unable to read image dimensions.");
+    }
+
+    return {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function getTargetMaxDimension(targetKB: number): number {
@@ -310,16 +406,17 @@ export async function compressImage(
 
   options.onProgress?.("reading");
 
-  const decoded = await decodeImage(
+  // Probe the source dimensions without creating a canvas. This allows the
+  // compressor to safely accept very large photos and downscale them into
+  // the browser-safe working area before any canvas is allocated.
+  const sourceDimensions = await probeImageDimensions(
     file,
-    undefined,
-    undefined,
     options.signal
   );
 
-  const dimensions = calculateDimensions(
-    decoded.width,
-    decoded.height,
+  const dimensions = calculateSafeDimensions(
+    sourceDimensions.width,
+    sourceDimensions.height,
     options.maxWidth,
     options.maxHeight
   );
@@ -328,8 +425,6 @@ export async function compressImage(
     dimensions.width,
     dimensions.height
   );
-
-  decoded.close?.();
 
   options.onProgress?.("optimizing-resolution");
   await yieldToBrowser(options.signal);
@@ -388,16 +483,15 @@ export async function compressToTargetSize(
 
   options.onProgress?.("reading");
 
-  const original = await decodeImage(
+  // Target-size compression also needs to accept large source photos.
+  // Only the working candidates are subject to canvas safety limits.
+  const original = await probeImageDimensions(
     file,
-    undefined,
-    undefined,
     options.signal
   );
 
   const originalWidth = original.width;
   const originalHeight = original.height;
-  original.close?.();
 
   const candidates = getResolutionCandidates(
     originalWidth,
