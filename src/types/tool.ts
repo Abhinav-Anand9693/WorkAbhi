@@ -1,5 +1,3 @@
-import { time } from "console";
-
 export type ToolType =
   | "calculator"
   | "text"
@@ -52,6 +50,10 @@ export interface ToolSEO {
   intro?: string;
   howToUse?: string[];
   faq?: ToolFAQ[];
+  overview?: string;
+  features?: string[];
+  useCases?: string[];
+  tips?: string[];
 }
 
 export interface Tool {

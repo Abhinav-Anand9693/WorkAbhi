@@ -8,42 +8,39 @@ import { siteConfig } from "@/config/site";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  metadataBase:
-    new URL(siteConfig.url),
+  metadataBase: new URL(siteConfig.url),
 
   title: {
-    default:
-      "WorkAbhi - Free Online Tools",
-    template:
-      "%s | WorkAbhi"
+    default: "WorkAbhi - Free Online Tools",
+    template: "%s | WorkAbhi",
   },
 
-  description:
-    siteConfig.description,
+  description: siteConfig.description,
 
-  keywords:
-    siteConfig.keywords,
+  keywords: siteConfig.keywords,
+
+  alternates: {
+    canonical: siteConfig.url,
+  },
 
   openGraph: {
-    title:
-      "WorkAbhi - Free Online Tools",
-
-    description:
-      siteConfig.description,
-
-    siteName:
-      siteConfig.name,
-
+    title: "WorkAbhi - Free Online Tools",
+    description: siteConfig.description,
+    siteName: siteConfig.name,
     type: "website",
+    url: siteConfig.url,
+  },
 
-    url:
-      siteConfig.url
+  twitter: {
+    card: "summary_large_image",
+    title: "WorkAbhi - Free Online Tools",
+    description: siteConfig.description,
   },
 
   robots: {
     index: true,
-    follow: true
-  }
+    follow: true,
+  },
 };
 
 export default function RootLayout({

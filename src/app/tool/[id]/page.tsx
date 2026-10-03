@@ -5,13 +5,15 @@ import Breadcrumbs from "@/components/seo/Breadcrumbs";
 import FAQ from "@/components/seo/FAQ";
 import HowToUse from "@/components/seo/HowToUse";
 import RelatedTools from "@/components/seo/RelatedTools";
-import StructuredData from "@/components/seo/StructuredData";  
+import StructuredData from "@/components/seo/StructuredData";
+import ToolSEOContent from "@/components/seo/ToolSEOContent";
 
 import ToolRunner from "@/components/tools/ToolRunner";
 
 import { tools } from "@/config/tools";
 import { getToolById } from "@/lib/toolRegistry";
 import { getRelatedTools } from "@/lib/relatedTools";
+import { getToolSEOContent } from "@/lib/toolSeo";
 export const dynamicParams = false;
 
 export function generateStaticParams() {
@@ -83,8 +85,8 @@ export default async function ToolPage({
     notFound();
   }
 
-  const related =
-    getRelatedTools(tool);
+  const related = getRelatedTools(tool);
+  const seoContent = getToolSEOContent(tool);
 
   const breadcrumbItems = [
     {
@@ -130,8 +132,7 @@ export default async function ToolPage({
             leading-7
             text-muted-foreground
           ">
-            {tool.seo.intro ??
-              tool.description}
+{seoContent.overview}
           </p>
 
         </header>
@@ -142,22 +143,11 @@ export default async function ToolPage({
           />
         </div>
 
-        {tool.seo.howToUse && (
-          <HowToUse
-            steps={
-              tool.seo.howToUse
-            }
-          />
-        )}
+        <ToolSEOContent content={seoContent} />
 
-        {tool.seo.faq &&
-          tool.seo.faq.length > 0 && (
-            <FAQ
-              items={
-                tool.seo.faq
-              }
-            />
-          )}
+        <HowToUse steps={seoContent.howToUse} />
+
+        <FAQ items={seoContent.faq} />
 
         <RelatedTools
           tools={related}
