@@ -926,11 +926,7 @@ export const tools: Tool[] = [
     "Estimate future value of money after inflation."
   ),
 
-  calculatorTool(
-    "age-calculator",
-    "Age Calculator",
-    "Calculate exact age from date of birth."
-  ),
+
 
   calculatorTool(
     "date-difference-calculator",
@@ -1283,17 +1279,7 @@ developerTool(
   "Format and normalize YAML documents.",
 ),
 
-developerTool(
-  "yaml-to-json",
-  "YAML to JSON",
-  "Convert YAML data into formatted JSON.",
-),
 
-developerTool(
-  "json-to-yaml",
-  "JSON to YAML",
-  "Convert JSON data into YAML.",
-),
 
 developerTool(
   "html-formatter",
@@ -1363,17 +1349,6 @@ developerTool(
   "Convert HTML content into Markdown.",
 ),
 
-developerTool(
-  "url-encoder",
-  "URL Encoder",
-  "Encode text for safe use inside URLs.",
-),
-
-developerTool(
-  "url-decoder",
-  "URL Decoder",
-  "Decode URL-encoded text.",
-),
 
 developerTool(
   "base64-encoder",
@@ -2598,17 +2573,6 @@ securityTool(
   "Generate a SHA-1 hash from text."
 ),
 
-securityTool(
-  "base64-encoder",
-  "Base64 Encoder",
-  "Encode text as Base64."
-),
-
-securityTool(
-  "base64-decoder",
-  "Base64 Decoder",
-  "Decode Base64 text into readable text."
-),
 
 securityTool(
   "url-encoder",

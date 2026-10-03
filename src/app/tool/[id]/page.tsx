@@ -12,6 +12,7 @@ import ToolRunner from "@/components/tools/ToolRunner";
 import { tools } from "@/config/tools";
 import { getToolById } from "@/lib/toolRegistry";
 import { getRelatedTools } from "@/lib/relatedTools";
+export const dynamicParams = false;
 
 export function generateStaticParams() {
   return tools.map(
