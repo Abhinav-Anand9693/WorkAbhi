@@ -1,5 +1,5 @@
 "use client";
-import Image from "next/image";
+/* eslint-disable @next/next/no-img-element */
 
 interface ImagePreviewProps {
   originalPreview?: string | null;
@@ -103,13 +103,12 @@ export default function ImagePreview({
 
           <div className="flex min-h-[280px] items-center justify-center bg-muted/10 p-4">
             {originalPreview ? (
-                        <Image
+                        <img
               src={originalPreview}
               alt="Original image"
-              width={1200}
-              height={900}
-              unoptimized
-              className="max-h-[500px] max-w-full object-contain"
+              loading="lazy"
+              decoding="async"
+              className="block max-h-[500px] max-w-full object-contain"
             />
             ) : (
               <span className="text-sm text-muted-foreground">
@@ -142,13 +141,12 @@ export default function ImagePreview({
                 Processing image...
               </div>
             ) : resultPreview ? (
-                            <Image
+                            <img
                 src={resultPreview}
                 alt="Processed image"
-                width={1200}
-                height={900}
-                unoptimized
-                className="max-h-[500px] max-w-full object-contain"
+                loading="lazy"
+                decoding="async"
+                className="block max-h-[500px] max-w-full object-contain"
               />
             ) : (
               <span className="text-sm text-muted-foreground">

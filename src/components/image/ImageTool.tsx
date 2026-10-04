@@ -14,6 +14,7 @@ import {
   resizeByWidth,
   resizeByHeight,
   resizeByPercentage,
+  createImagePreviewURL,
 } from "@/engine/image/imageCompressionEngine";
 
 import {
@@ -44,12 +45,6 @@ import {
 } from "@/engine/image/imageUtilityEngine";
 
 import { imageTools } from "@/config/imageTools";
-import {
-  getPreferredOutputType,
-  throwIfImageProcessingAborted,
-  validateCanvasDimensions,
-  validateImageDimensions,
-} from "@/engine/image/imageSafety";
 import type { ImageToolDefinition } from "@/types/image";
 
 interface ImageToolProps {
@@ -60,6 +55,27 @@ type OutputFormat =
   | "image/jpeg"
   | "image/png"
   | "image/webp";
+
+const COMPRESSION_TOOL_IDS = new Set([
+  "image-compressor",
+  "compress-image-to-50kb",
+  "compress-image-to-100kb",
+  "compress-image-to-200kb",
+  "compress-image-to-500kb",
+  "compress-image-to-1mb",
+  "jpg-compressor",
+  "png-compressor",
+  "webp-compressor",
+]);
+
+const MAX_COMPRESSION_FILES = 20;
+
+interface CompressionBatchResult {
+  fileName: string;
+  originalSize: number;
+  result: Blob | null;
+  error?: string;
+}
 
 interface ProcessingSettings {
   quality: number;
@@ -178,51 +194,22 @@ function getOutputExtension(type: string): string {
 }
 
 function loadImageFromBlob(
-  blob: Blob,
-  signal?: AbortSignal
+  blob: Blob
 ): Promise<HTMLImageElement> {
-  throwIfImageProcessingAborted(signal);
-
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
 
     const image = document.createElement("img");
 
-    const cleanup = () => {
-      URL.revokeObjectURL(url);
-      signal?.removeEventListener("abort", onAbort);
-    };
-
-    const onAbort = () => {
-      cleanup();
-      reject(
-        new DOMException(
-          "Processing cancelled.",
-          "AbortError"
-        )
-      );
-    };
-
     image.onload = () => {
-      cleanup();
-      try {
-        throwIfImageProcessingAborted(signal);
-        resolve(image);
-      } catch (error) {
-        reject(error);
-      }
+      URL.revokeObjectURL(url);
+      resolve(image);
     };
 
     image.onerror = () => {
-      cleanup();
+      URL.revokeObjectURL(url);
       reject(new Error("Unable to load image."));
     };
-
-    signal?.addEventListener(
-      "abort",
-      onAbort,
-      { once: true }
-    );
 
     image.src = url;
   });
@@ -269,17 +256,8 @@ async function processCanvasImage(
     | "pixelate"
     | "grayscale"
     | "black-white"
-,
-  signal?: AbortSignal
 ): Promise<Blob> {
-  throwIfImageProcessingAborted(signal);
-  const image = await loadImageFromBlob(file, signal);
-  validateImageDimensions(image.naturalWidth, image.naturalHeight);
-
-  validateCanvasDimensions(
-    image.naturalWidth,
-    image.naturalHeight
-  );
+  const image = await loadImageFromBlob(file);
 
   const canvas = document.createElement("canvas");
 
@@ -297,8 +275,6 @@ async function processCanvasImage(
   }
 
   if (mode === "blur") {
-    throwIfImageProcessingAborted(signal);
-
     const radius = Math.max(
       1,
       Math.round(settings.effectValue)
@@ -308,7 +284,7 @@ async function processCanvasImage(
     ctx.drawImage(image, 0, 0);
     ctx.filter = "none";
 
-    return canvasToBlob(canvas, getPreferredOutputType(file));
+    return canvasToBlob(canvas, "image/png");
   }
 
   if (mode === "pixelate") {
@@ -330,7 +306,6 @@ async function processCanvasImage(
       Math.floor(canvas.height / size)
     );
 
-    validateCanvasDimensions(smallWidth, smallHeight, "Pixelation working image");
     smallCanvas.width = smallWidth;
     smallCanvas.height = smallHeight;
 
@@ -343,7 +318,6 @@ async function processCanvasImage(
       );
     }
 
-    throwIfImageProcessingAborted(signal);
     smallCtx.imageSmoothingEnabled = false;
 
     smallCtx.drawImage(
@@ -368,11 +342,9 @@ async function processCanvasImage(
       canvas.height
     );
 
-    throwIfImageProcessingAborted(signal);
-    return canvasToBlob(canvas, getPreferredOutputType(file));
+    return canvasToBlob(canvas, "image/png");
   }
 
-  throwIfImageProcessingAborted(signal);
   ctx.drawImage(image, 0, 0);
 
   const imageData = ctx.getImageData(
@@ -383,22 +355,12 @@ async function processCanvasImage(
   );
 
   const data = imageData.data;
-  let processedPixels = 0;
 
   for (
     let i = 0;
     i < data.length;
     i += 4
   ) {
-    if (processedPixels % 100_000 === 0) {
-      throwIfImageProcessingAborted(signal);
-      if (processedPixels > 0) {
-        await new Promise<void>((resolve) =>
-          window.setTimeout(resolve, 0)
-        );
-      }
-    }
-    processedPixels += 1;
     let r = data[i];
     let g = data[i + 1];
     let b = data[i + 2];
@@ -592,8 +554,6 @@ async function processCanvasImage(
     );
   }
 
-  throwIfImageProcessingAborted(signal);
-
   ctx.putImageData(
     imageData,
     0,
@@ -602,8 +562,89 @@ async function processCanvasImage(
 
   return canvasToBlob(
     canvas,
-    getPreferredOutputType(file)
+    "image/png"
   );
+}
+
+function throwIfBatchAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new DOMException("Processing cancelled.", "AbortError");
+  }
+}
+
+function yieldBatchToBrowser(signal: AbortSignal): Promise<void> {
+  throwIfBatchAborted(signal);
+
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(resolve, 0);
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        reject(new DOMException("Processing cancelled.", "AbortError"));
+      },
+      { once: true }
+    );
+  });
+}
+
+async function compressSingleFile(
+  file: File,
+  toolId: string,
+  quality: number,
+  signal: AbortSignal,
+  onProgress: (stage: "idle" | "reading" | "optimizing-resolution" | "compressing" | "finalizing" | "complete") => void
+): Promise<Blob> {
+  if (toolId === "image-compressor") {
+    return compressImage(file, { quality, signal, onProgress });
+  }
+
+  if (toolId === "jpg-compressor") {
+    return compressImage(file, {
+      quality,
+      outputType: "image/jpeg",
+      signal,
+      onProgress,
+    });
+  }
+
+  if (toolId === "png-compressor") {
+    return compressImage(file, {
+      quality: 1,
+      outputType: "image/png",
+      signal,
+      onProgress,
+    });
+  }
+
+  if (toolId === "webp-compressor") {
+    return compressImage(file, {
+      quality,
+      outputType: "image/webp",
+      signal,
+      onProgress,
+    });
+  }
+
+  const targetMap: Record<string, number> = {
+    "compress-image-to-50kb": 50,
+    "compress-image-to-100kb": 100,
+    "compress-image-to-200kb": 200,
+    "compress-image-to-500kb": 500,
+    "compress-image-to-1mb": 1024,
+  };
+
+  const targetKB = targetMap[toolId];
+  if (targetKB) {
+    return compressToTargetSize(file, {
+      targetKB,
+      outputType: "image/jpeg",
+      signal,
+      onProgress,
+    });
+  }
+
+  throw new Error("Unsupported compression tool.");
 }
 
 export default function ImageTool({
@@ -640,6 +681,9 @@ export default function ImageTool({
     setResultFiles,
   ] = useState<Blob[]>([]);
 
+  const [compressionResults, setCompressionResults] =
+    useState<CompressionBatchResult[]>([]);
+
   const [settings, setSettings] =
     useState<ProcessingSettings>(
       DEFAULT_SETTINGS
@@ -660,6 +704,9 @@ export default function ImageTool({
 
 const abortControllerRef =
   useRef<AbortController | null>(null);
+
+  const previewRequestRef =
+    useRef(0);
   const [error, setError] =
     useState("");
 
@@ -712,7 +759,11 @@ const abortControllerRef =
     );
   }
   function cancelProcessing() {
+    previewRequestRef.current += 1;
     abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setLoading(false);
+    setProcessingStage("idle");
     setError("Processing cancelled.");
   }
 
@@ -733,20 +784,26 @@ const abortControllerRef =
    * Determine whether this tool supports
    * multiple images.
    */
+  const isCompressionTool =
+    COMPRESSION_TOOL_IDS.has(toolId);
+
   const isMultiple =
     definition.multiple === true ||
+    isCompressionTool ||
     toolId === "image-overlay" ||
     toolId === "image-collage-maker" ||
     toolId === "image-merger";
 
   const maxFiles =
-    toolId === "image-merger"
-      ? 20
-      : toolId === "image-collage-maker"
-        ? 12
-        : toolId === "image-overlay"
-          ? 2
-          : 1;
+    isCompressionTool
+      ? MAX_COMPRESSION_FILES
+      : toolId === "image-merger"
+        ? 20
+        : toolId === "image-collage-maker"
+          ? 12
+          : toolId === "image-overlay"
+            ? 2
+            : 1;
 
   /**
    * Handle file selection.
@@ -761,6 +818,9 @@ const abortControllerRef =
     if (!selectedFiles.length) {
       return;
     }
+
+    // Invalidate any preview generation still running for a previous file/result.
+    previewRequestRef.current += 1;
 
     let nextFiles: File[];
 
@@ -796,27 +856,44 @@ const abortControllerRef =
     }
 
     /**
-     * If the first image changed,
-     * recreate the original preview.
+     * Compression is intentionally preview-free. A preview can force the browser
+     * to decode a large source image and compete with the actual compression job
+     * for the same limited device memory.
      */
-    if (
+    if (isCompressionTool) {
+      previewRequestRef.current += 1;
+
+      if (originalPreview) {
+        URL.revokeObjectURL(originalPreview);
+      }
+
+      setOriginalPreview(null);
+    } else if (
       !files.length ||
       nextFiles[0] !== files[0]
     ) {
       if (originalPreview) {
-        URL.revokeObjectURL(
-          originalPreview
-        );
+        URL.revokeObjectURL(originalPreview);
       }
 
-      const previewUrl =
-        URL.createObjectURL(
-          nextFiles[0]
-        );
+      setOriginalPreview(null);
 
-      setOriginalPreview(
-        previewUrl
-      );
+      const requestId = previewRequestRef.current;
+      const previewFile = nextFiles[0];
+
+      void createImagePreviewURL(previewFile)
+        .then((previewUrl) => {
+          if (requestId !== previewRequestRef.current) {
+            URL.revokeObjectURL(previewUrl);
+            return;
+          }
+
+          setOriginalPreview(previewUrl);
+        })
+        .catch(() => {
+          if (requestId !== previewRequestRef.current) return;
+          setOriginalPreview(URL.createObjectURL(previewFile));
+        });
     }
 
     if (resultPreview) {
@@ -829,6 +906,7 @@ const abortControllerRef =
 
     setResult(null);
     setResultFiles([]);
+    setCompressionResults([]);
     setResultPreview(null);
 
     setMetadata(null);
@@ -842,6 +920,8 @@ const abortControllerRef =
    * Reset everything.
    */
   function resetTool() {
+    previewRequestRef.current += 1;
+
     if (originalPreview) {
       URL.revokeObjectURL(
         originalPreview
@@ -858,6 +938,7 @@ const abortControllerRef =
 
     setResult(null);
     setResultFiles([]);
+    setCompressionResults([]);
 
     setOriginalPreview(null);
     setResultPreview(null);
@@ -899,6 +980,67 @@ const abortControllerRef =
     setResultFiles([]);
 
     try {
+      if (isCompressionTool) {
+        const batch: CompressionBatchResult[] = [];
+        const outputs: Blob[] = [];
+
+        setCompressionResults([]);
+
+        // Process sequentially: never decode multiple large images concurrently.
+        for (const file of files) {
+          throwIfBatchAborted(controller.signal);
+
+          try {
+            const output = await compressSingleFile(
+              file,
+              toolId,
+              settings.quality / 100,
+              controller.signal,
+              setProcessingStage
+            );
+
+            batch.push({
+              fileName: file.name,
+              originalSize: file.size,
+              result: output,
+            });
+            outputs.push(output);
+            setCompressionResults([...batch]);
+          } catch (fileError) {
+            if (
+              fileError instanceof DOMException &&
+              fileError.name === "AbortError"
+            ) {
+              throw fileError;
+            }
+
+            batch.push({
+              fileName: file.name,
+              originalSize: file.size,
+              result: null,
+              error:
+                fileError instanceof Error
+                  ? fileError.message
+                  : "Unable to process this image on this device.",
+            });
+            setCompressionResults([...batch]);
+          }
+
+          await yieldBatchToBrowser(controller.signal);
+        }
+
+        if (!outputs.length) {
+          throw new Error(
+            "None of the selected images could be processed on this device."
+          );
+        }
+
+        setResult(outputs[outputs.length - 1]);
+        setResultFiles(outputs);
+        setProcessingStage("complete");
+        return;
+      }
+
       const primaryFile =
         files[0];
 
@@ -997,7 +1139,6 @@ const abortControllerRef =
             primaryFile,
             {
               quality: 1,
-
               outputType:
                 "image/png",
               signal: controller.signal,
@@ -1041,8 +1182,6 @@ const abortControllerRef =
                 settings.width,
               maxHeight:
                 settings.height,
-              signal: controller.signal,
-              onProgress: setProcessingStage,
             }
           );
       }
@@ -1054,8 +1193,7 @@ const abortControllerRef =
         output =
           await resizeByWidth(
             primaryFile,
-            settings.width,
-            controller.signal
+            settings.width
           );
       }
 
@@ -1066,8 +1204,7 @@ const abortControllerRef =
         output =
           await resizeByHeight(
             primaryFile,
-            settings.height,
-            controller.signal
+            settings.height
           );
       }
 
@@ -1078,8 +1215,7 @@ const abortControllerRef =
         output =
           await resizeByPercentage(
             primaryFile,
-            settings.percentage,
-            controller.signal
+            settings.percentage
           );
       }
 
@@ -1103,8 +1239,7 @@ const abortControllerRef =
                 settings.cropWidth,
               height:
                 settings.cropHeight,
-            },
-            controller.signal
+            }
           );
       }
 
@@ -1114,8 +1249,7 @@ const abortControllerRef =
       ) {
         output =
           await circularCrop(
-            primaryFile,
-            controller.signal
+            primaryFile
           );
       }
 
@@ -1135,7 +1269,6 @@ const abortControllerRef =
             {
               rotate:
                 settings.rotate,
-              signal: controller.signal,
             }
           );
       }
@@ -1150,7 +1283,6 @@ const abortControllerRef =
             {
               flip:
                 settings.flip,
-              signal: controller.signal,
             }
           );
       }
@@ -1168,8 +1300,7 @@ const abortControllerRef =
         output =
           await sharpenCanvas(
             primaryFile,
-            settings.effectValue,
-            controller.signal
+            settings.effectValue
           );
       }
 
@@ -1181,8 +1312,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "blur",
-            controller.signal
+            "blur"
           );
       }
 
@@ -1194,8 +1324,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "pixelate",
-            controller.signal
+            "pixelate"
           );
       }
 
@@ -1207,8 +1336,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "grayscale",
-            controller.signal
+            "grayscale"
           );
       }
 
@@ -1220,8 +1348,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "black-white",
-            controller.signal
+            "black-white"
           );
       }
 
@@ -1239,8 +1366,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "brightness",
-            controller.signal
+            "brightness"
           );
       }
 
@@ -1252,8 +1378,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "contrast",
-            controller.signal
+            "contrast"
           );
       }
 
@@ -1265,8 +1390,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "saturation",
-            controller.signal
+            "saturation"
           );
       }
 
@@ -1278,8 +1402,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "hue",
-            controller.signal
+            "hue"
           );
       }
 
@@ -1291,8 +1414,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "exposure",
-            controller.signal
+            "exposure"
           );
       }
 
@@ -1304,8 +1426,7 @@ const abortControllerRef =
           await processCanvasImage(
             primaryFile,
             settings,
-            "opacity",
-            controller.signal
+            "opacity"
           );
       }
 
@@ -1323,8 +1444,7 @@ const abortControllerRef =
           await addBorder(
             primaryFile,
             settings.borderSize,
-            settings.borderColor,
-            controller.signal
+            settings.borderColor
           );
       }
 
@@ -1335,8 +1455,7 @@ const abortControllerRef =
         output =
           await roundedCorners(
             primaryFile,
-            settings.radius,
-            controller.signal
+            settings.radius
           );
       }
 
@@ -1359,7 +1478,6 @@ const abortControllerRef =
                 settings.textSize,
               color:
                 settings.textColor,
-              signal: controller.signal,
             }
           );
       }
@@ -1376,7 +1494,6 @@ const abortControllerRef =
               opacity:
                 settings.watermarkOpacity /
                 100,
-              signal: controller.signal,
             }
           );
       }
@@ -1400,8 +1517,7 @@ const abortControllerRef =
         output =
           await overlayImages(
             files[0],
-            files[1],
-            controller.signal
+            files[1]
           );
       }
 
@@ -1423,8 +1539,7 @@ const abortControllerRef =
 
         output =
           await createCollage(
-            files,
-            controller.signal
+            files
           );
       }
 
@@ -1446,8 +1561,7 @@ const abortControllerRef =
 
         output =
           await mergeImages(
-            files,
-            controller.signal
+            files
           );
       }
 
@@ -1463,8 +1577,7 @@ const abortControllerRef =
       ) {
         outputs =
           await splitImage(
-            primaryFile,
-            controller.signal
+            primaryFile
           );
 
         if (!outputs.length) {
@@ -1532,9 +1645,7 @@ const abortControllerRef =
             {
               quality: 1,
               outputType:
-                getPreferredOutputType(primaryFile),
-              signal: controller.signal,
-              onProgress: setProcessingStage,
+                "image/png",
             }
           );
       }
@@ -1634,14 +1745,21 @@ const abortControllerRef =
         );
       }
 
-      const previewUrl =
-        URL.createObjectURL(
-          output
-        );
+      const requestId = ++previewRequestRef.current;
+      void createImagePreviewURL(output, controller.signal)
+        .then((previewUrl) => {
+          if (requestId !== previewRequestRef.current) {
+            URL.revokeObjectURL(previewUrl);
+            return;
+          }
 
-      setResultPreview(
-        previewUrl
-      );
+          setResultPreview(previewUrl);
+        })
+        .catch((previewError) => {
+          if (requestId !== previewRequestRef.current) return;
+          if (previewError instanceof DOMException && previewError.name === "AbortError") return;
+          setResultPreview(URL.createObjectURL(output));
+        });
     } catch (err) {
       if (
         err instanceof DOMException &&
@@ -1659,11 +1777,9 @@ const abortControllerRef =
           : "Something went wrong while processing the image."
       );
     } finally {
-      if (abortControllerRef.current === controller) {
-        abortControllerRef.current = null;
-        setLoading(false);
-        setProcessingStage("idle");
-      }
+      abortControllerRef.current = null;
+      setLoading(false);
+      setProcessingStage("idle");
     }
   }
 
@@ -2223,7 +2339,7 @@ const abortControllerRef =
           disabled={loading || !files.length}
           className="rounded-xl bg-primary px-6 py-3 font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {loading ? "Processing..." : "Process Image"}
+          {loading ? (isCompressionTool ? "Compressing..." : "Processing...") : (isCompressionTool ? "Compress Images" : "Process Image")}
         </button>
 
         {loading && (
@@ -2240,14 +2356,14 @@ const abortControllerRef =
       {loading && (
         <div className="mt-5 rounded-xl border bg-muted/20 p-4">
           <p className="text-sm font-medium">
-            {processingStage === "reading" && "Reading image..."}
+            {processingStage === "reading" && (isCompressionTool ? "Reading images..." : "Reading image...")}
             {processingStage === "optimizing-resolution" && "Optimizing resolution..."}
             {processingStage === "compressing" && "Finding optimal quality..."}
             {processingStage === "finalizing" && "Finalizing result..."}
           </p>
 
           <p className="mt-1 text-xs text-muted-foreground">
-            Your image is being processed locally in your browser.
+            Your images are processed locally in your browser. Large images are processed one at a time to protect device memory.
           </p>
         </div>
       )}
@@ -2405,10 +2521,71 @@ const abortControllerRef =
       )}
 
       {/* ========================================
+          COMPRESSION BATCH RESULTS
+      ======================================== */}
+
+      {isCompressionTool && compressionResults.length > 0 && (
+        <section className="rounded-2xl border bg-background p-5 sm:p-6">
+          <h2 className="text-lg font-semibold">Compression results</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Processed one image at a time to keep memory usage low. Pixel dimensions are preserved.
+          </p>
+
+          <div className="mt-5 space-y-3">
+            {compressionResults.map((item, index) => {
+              const saved =
+                item.result && item.originalSize > 0
+                  ? Math.max(0, Math.round(((item.originalSize - item.result.size) / item.originalSize) * 100))
+                  : 0;
+
+              return (
+                <div
+                  key={`${item.fileName}-${index}`}
+                  className="rounded-xl border p-4"
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">
+                        {index + 1}. {item.fileName}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Original: {formatBytes(item.originalSize)}
+                        {item.result ? ` • Result: ${formatBytes(item.result.size)} • Saved: ${saved}%` : ""}
+                      </p>
+                    </div>
+
+                    {item.result ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          downloadBlob(
+                            item.result as Blob,
+                            `${item.fileName.replace(/\.[^.]+$/, "")}-compressed.${getOutputExtension((item.result as Blob).type)}`
+                          )
+                        }
+                        className="shrink-0 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+                      >
+                        Download
+                      </button>
+                    ) : (
+                      <span className="text-sm text-destructive">
+                        {item.error}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* ========================================
           NORMAL IMAGE PREVIEW
       ======================================== */}
 
-      {files.length > 0 &&
+      {!isCompressionTool &&
+        files.length > 0 &&
         toolId !==
           "image-color-picker" &&
         toolId !==
