@@ -5,8 +5,10 @@
  * supports module workers + OffscreenCanvas + createImageBitmap.
  *
  * Important design rule:
- * - Compression NEVER changes pixel dimensions.
- * - Target-size tools change encoding quality only.
+ * - JPEG/PNG -> JPEG uses @standardagents/sip: a scanline/WASM codec path
+ *   that does not depend on browser canvas texture limits.
+ * - Normal compression preserves encoded dimensions.
+ * - Target-size tools may intentionally resize, preserving aspect ratio.
  * - Images are processed one at a time by the caller.
  */
 
@@ -70,6 +72,63 @@ function clampQuality(value: number): number {
   return Math.min(MAX_QUALITY, Math.max(MIN_QUALITY, value));
 }
 
+
+async function compressWithSip(
+  request: RequestMessage,
+  signalCheck: () => void
+): Promise<{ blob: Blob; width: number; height: number }> {
+  // SIP's WASM codec path is the production path for JPEG/PNG inputs when the
+  // requested output is JPEG. It decodes JPEG scanlines and feeds them directly
+  // into a JPEG encoder, avoiding createImageBitmap()/HTML canvas entirely.
+  // That is what prevents Samsung/Android's ~8K graphics-surface limit from
+  // silently turning 9248x6936 into 8092x6069.
+  const input = await request.file.arrayBuffer();
+  signalCheck();
+
+  // Load the codec from WorkAbhi's own static asset copy. This deliberately
+  // avoids importing a .wasm file through Next/Turbopack's module graph.
+  // The build preparation script copies the three SIP runtime files to
+  // /workabhi-codecs/sip/.
+  // The codec is a runtime asset copied to /public by the prebuild script.
+  // TypeScript cannot resolve a public URL as a module specifier, so keep this
+  // import intentionally runtime-only.
+  const codecUrl = new URL("/workabhi-codecs/sip/index.js", self.location.origin).href;
+
+  // The codec lives in /public and must stay outside Next/Turbopack's module graph.
+  // Use a runtime URL plus webpackIgnore so the bundler does not try to resolve
+  // the public asset as a server-relative package import.
+  const { ready: sipReady, transform: sipTransform, collect: sipCollect } =
+    await import(/* webpackIgnore: true */ codecUrl);
+
+  await sipReady();
+  signalCheck();
+
+  const transformOptions: { width?: number; height?: number; quality: number } = {
+    quality: Math.round(clampQuality(request.quality) * 100),
+  };
+
+  if (request.resizeWidth && request.resizeHeight) {
+    transformOptions.width = request.resizeWidth;
+    transformOptions.height = request.resizeHeight;
+  } else if (request.expectedWidth && request.expectedHeight) {
+    transformOptions.width = request.expectedWidth;
+    transformOptions.height = request.expectedHeight;
+  }
+
+  const encoded = sipTransform(input, transformOptions);
+  const result = await sipCollect(encoded);
+  signalCheck();
+
+  const width = result.info.width;
+  const height = result.info.height;
+
+  return {
+    blob: new Blob([result.data], { type: "image/jpeg" }),
+    width,
+    height,
+  };
+}
+
 self.onmessage = async (event: MessageEvent<RequestMessage | { type: "cancel"; id: number }>) => {
   const message = event.data;
 
@@ -86,6 +145,34 @@ self.onmessage = async (event: MessageEvent<RequestMessage | { type: "cancel"; i
   try {
     if (cancelled.has(request.id)) throw new DOMException("Processing cancelled.", "AbortError");
     post({ id: request.id, type: "progress", stage: "reading" });
+
+    if (request.outputType === "image/jpeg") {
+      const result = await compressWithSip(request, () => {
+        if (cancelled.has(request.id)) {
+          throw new DOMException("Processing cancelled.", "AbortError");
+        }
+      });
+
+      if (
+        request.expectedWidth &&
+        request.expectedHeight &&
+        (result.width !== request.expectedWidth || result.height !== request.expectedHeight)
+      ) {
+        throw new Error(
+          `The codec returned ${result.width}×${result.height}, but WorkAbhi expected ${request.expectedWidth}×${request.expectedHeight}. The result was rejected.`
+        );
+      }
+
+      post({ id: request.id, type: "progress", stage: "finalizing" });
+      post({
+        id: request.id,
+        type: "success",
+        blob: result.blob,
+        width: result.width,
+        height: result.height,
+      });
+      return;
+    }
 
     if (typeof createImageBitmap !== "function") {
       throw new Error("This browser does not support worker image decoding.");
@@ -121,7 +208,8 @@ self.onmessage = async (event: MessageEvent<RequestMessage | { type: "cancel"; i
 
     canvas = new OffscreenCanvas(width, height);
     const context = canvas.getContext("2d", {
-      alpha: request.outputType !== "image/jpeg",
+      // JPEG is handled by SIP above; this fallback is only PNG/WebP.
+      alpha: true,
     });
 
     if (!context) {
@@ -130,11 +218,6 @@ self.onmessage = async (event: MessageEvent<RequestMessage | { type: "cancel"; i
 
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
-
-    if (request.outputType === "image/jpeg") {
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, width, height);
-    }
 
     context.drawImage(bitmap, 0, 0, width, height);
     if (cancelled.has(request.id)) throw new DOMException("Processing cancelled.", "AbortError");

@@ -353,10 +353,10 @@ async function getImageDimensions(file: Blob, signal?: AbortSignal): Promise<Ima
 }
 
 function canUseWorker(): boolean {
-  return typeof window !== "undefined" &&
-    typeof Worker !== "undefined" &&
-    typeof OffscreenCanvas !== "undefined" &&
-    typeof createImageBitmap === "function";
+  // The codec worker has a WASM path that does not depend on OffscreenCanvas
+  // or createImageBitmap. Requiring graphics APIs here was the reason Samsung
+  // devices were incorrectly pushed onto the failing canvas fallback.
+  return typeof window !== "undefined" && typeof Worker !== "undefined";
 }
 
 function getWorker(): Worker {
