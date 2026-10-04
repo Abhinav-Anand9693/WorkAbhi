@@ -2528,7 +2528,7 @@ const abortControllerRef =
         <section className="rounded-2xl border bg-background p-5 sm:p-6">
           <h2 className="text-lg font-semibold">Compression results</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Processed one image at a time to keep memory usage low. Pixel dimensions are preserved.
+            Processed one image at a time to keep memory usage low. Standard compression preserves dimensions; target-size tools may proportionally reduce resolution for very large photos so mobile browsers can process them safely.
           </p>
 
           <div className="mt-5 space-y-3">

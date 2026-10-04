@@ -21,6 +21,8 @@ type RequestMessage = {
   targetBytes?: number;
   expectedWidth?: number;
   expectedHeight?: number;
+  resizeWidth?: number;
+  resizeHeight?: number;
 };
 
 type ResponseMessage =
@@ -90,6 +92,13 @@ self.onmessage = async (event: MessageEvent<RequestMessage | { type: "cancel"; i
     }
 
     bitmap = await createImageBitmap(request.file, {
+      ...(request.resizeWidth && request.resizeHeight
+        ? {
+            resizeWidth: request.resizeWidth,
+            resizeHeight: request.resizeHeight,
+            resizeQuality: "high" as const,
+          }
+        : {}),
       imageOrientation: "from-image",
     });
 

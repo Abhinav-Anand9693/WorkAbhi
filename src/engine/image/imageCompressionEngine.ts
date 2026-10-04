@@ -43,8 +43,12 @@ interface WorkerSuccess {
 
 const MAX_QUALITY = 0.95;
 const MIN_QUALITY = 0.04;
+const QUALITY_ATTEMPTS = 8;
 const HEADER_READ_BYTES = 512 * 1024;
 const MAX_CANVAS_DIMENSION = 32767;
+const MIN_TARGET_PIXELS = 300_000;
+const TARGET_RESOLUTION_RETRY_FACTOR = 0.64;
+const MAX_TARGET_RESOLUTION_ATTEMPTS = 5;
 
 let workerInstance: Worker | null = null;
 let workerSequence = 0;
@@ -372,6 +376,7 @@ async function runWorkerCompression(
     quality: number;
     targetBytes?: number;
     expected: ImageDimensions;
+    resize?: ImageDimensions;
     signal?: AbortSignal;
     onProgress?: (stage: CompressionStage) => void;
   }
@@ -471,6 +476,8 @@ async function runWorkerCompression(
       targetBytes: options.targetBytes,
       expectedWidth: options.expected.width,
       expectedHeight: options.expected.height,
+      resizeWidth: options.resize?.width,
+      resizeHeight: options.resize?.height,
     });
   });
 }
@@ -642,6 +649,155 @@ export async function compressImage(
   return finalOutput;
 }
 
+interface TargetResolutionPlan {
+  width: number;
+  height: number;
+  changed: boolean;
+}
+
+/**
+ * Very large source images are the one case where a target-size compressor
+ * should not insist on decoding the full-resolution bitmap on the client.
+ *
+ * A 64 MP JPEG needs roughly 256 MB for one RGBA frame before the browser's
+ * canvas/encoder overhead is counted. On mobile WebViews that can fail even
+ * when the original JPEG file is only 20–30 MB.
+ *
+ * Target-size tools have a legitimate resolution budget: a 50 KB JPEG cannot
+ * retain useful 64 MP detail anyway. We therefore choose a conservative,
+ * target-driven pixel budget and ask createImageBitmap() to decode directly at
+ * that size. This is an explicit resolution optimization, never a silent
+ * distortion: aspect ratio is preserved and the caller is told through the
+ * `optimizing-resolution` progress stage.
+ */
+function calculateTargetResolution(
+  original: ImageDimensions,
+  targetBytes: number
+): TargetResolutionPlan {
+  const sourcePixels = original.width * original.height;
+
+  // A target-size JPEG typically needs a fraction of a byte per output pixel
+  // at the lower quality range. Use 0.25 bytes/pixel as a conservative
+  // planning heuristic, then let the quality search decide the final encode.
+  // This keeps 50 KB jobs around 0.5 MP while allowing a 1 MB job several MP
+  // of detail without ever asking a mobile browser to render the full source.
+  const derivedPixels = targetBytes / 0.25;
+  const minPixels = MIN_TARGET_PIXELS;
+  const maxPixels = 12_000_000;
+  const targetPixels = Math.min(
+    sourcePixels,
+    Math.max(minPixels, Math.min(maxPixels, derivedPixels))
+  );
+
+  if (sourcePixels <= targetPixels) {
+    return {
+      width: original.width,
+      height: original.height,
+      changed: false,
+    };
+  }
+
+  const scale = Math.sqrt(targetPixels / sourcePixels);
+  return {
+    width: Math.max(1, Math.round(original.width * scale)),
+    height: Math.max(1, Math.round(original.height * scale)),
+    changed: true,
+  };
+}
+
+async function renderTargetOnMainThread(
+  file: Blob,
+  dimensions: ImageDimensions,
+  outputType: OutputFormat,
+  targetBytes: number,
+  signal?: AbortSignal,
+  onProgress?: (stage: CompressionStage) => void
+): Promise<Blob> {
+  throwIfAborted(signal);
+  assertCanvasDimensions(dimensions.width, dimensions.height);
+  onProgress?.("optimizing-resolution");
+
+  const bitmap = await createImageBitmap(file, {
+    resizeWidth: dimensions.width,
+    resizeHeight: dimensions.height,
+    resizeQuality: "high",
+    imageOrientation: "from-image",
+  });
+
+  try {
+    throwIfAborted(signal);
+
+    if (bitmap.width !== dimensions.width || bitmap.height !== dimensions.height) {
+      throw new Error(
+        `The browser decoded the optimized image as ${bitmap.width}×${bitmap.height} instead of ${dimensions.width}×${dimensions.height}.`
+      );
+    }
+
+    const canvas = document.createElement("canvas");
+    try {
+      canvas.width = dimensions.width;
+      canvas.height = dimensions.height;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("Canvas 2D is not available on this device.");
+
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, dimensions.width, dimensions.height);
+      context.drawImage(bitmap, 0, 0, dimensions.width, dimensions.height);
+
+      let low = MIN_QUALITY;
+      let high = MAX_QUALITY;
+      let best: Blob | null = null;
+
+      for (let attempt = 0; attempt < QUALITY_ATTEMPTS; attempt += 1) {
+        throwIfAborted(signal);
+        onProgress?.("compressing");
+        const quality = attempt === 0 ? MAX_QUALITY : (low + high) / 2;
+        const blob = await canvasToBlob(canvas, outputType, quality);
+
+        if (blob.size <= targetBytes) {
+          best = blob;
+          low = quality;
+        } else {
+          high = quality;
+        }
+      }
+
+      if (!best) {
+        throw new Error(
+          `Unable to reach ${Math.round(targetBytes / 1024)} KB even after optimizing resolution to ${dimensions.width}×${dimensions.height}.`
+        );
+      }
+
+      return best;
+    } finally {
+      canvas.width = 1;
+      canvas.height = 1;
+    }
+  } finally {
+    bitmap.close();
+  }
+}
+
+
+function isRecoverableTargetSizeFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unable to reach|could not process this image|cannot allocate|memory|out of memory|offscreen/i.test(
+    message
+  );
+}
+
+function reduceTargetResolution(plan: TargetResolutionPlan): TargetResolutionPlan {
+  const pixels = plan.width * plan.height;
+  const nextPixels = Math.max(MIN_TARGET_PIXELS, Math.floor(pixels * TARGET_RESOLUTION_RETRY_FACTOR));
+  const scale = Math.sqrt(nextPixels / pixels);
+
+  return {
+    width: Math.max(1, Math.round(plan.width * scale)),
+    height: Math.max(1, Math.round(plan.height * scale)),
+    changed: true,
+  };
+}
+
 export async function compressToTargetSize(
   file: File | Blob,
   optionsOrTarget: TargetCompressionOptions | number,
@@ -674,18 +830,110 @@ export async function compressToTargetSize(
     return file;
   }
 
-  // One worker job owns one decoded bitmap/canvas and performs all quality attempts.
-  const output = await compressWithFallback(file, {
-    outputType,
-    quality: MAX_QUALITY,
-    targetBytes,
-    expected: original,
-    signal: options.signal,
-    onProgress: options.onProgress,
-  });
+  const resolution = calculateTargetResolution(original, targetBytes);
+
+  // Normal-sized images keep their original dimensions and use the fast
+  // worker-first path. Huge images take the target-size mobile path, which
+  // decodes directly at the planned output resolution instead of allocating a
+  // full-resolution 64 MP bitmap on Android.
+  let output: Blob | undefined;
+
+  let finalResolution = resolution;
+
+  if (!resolution.changed) {
+    output = await compressWithFallback(file, {
+      outputType,
+      quality: MAX_QUALITY,
+      targetBytes,
+      expected: original,
+      signal: options.signal,
+      onProgress: options.onProgress,
+    });
+  } else {
+    // Worker-first low-memory path: createImageBitmap() is asked to decode
+    // directly at the reduced resolution, so WorkAbhi does not intentionally
+    // allocate a full-resolution 64 MP OffscreenCanvas on mobile. If the
+    // browser still rejects the allocation or the target cannot be reached at
+    // the first plan, progressively reduce the working resolution.
+    let completed = false;
+
+    for (let attempt = 0; attempt < MAX_TARGET_RESOLUTION_ATTEMPTS; attempt += 1) {
+      throwIfAborted(options.signal);
+
+      try {
+        if (!canUseWorker()) throw new Error("Worker image processing is unavailable.");
+
+        const workerResult = await runWorkerCompression(file, {
+          outputType,
+          quality: MAX_QUALITY,
+          targetBytes,
+          expected: finalResolution,
+          resize: finalResolution,
+          signal: options.signal,
+          onProgress: options.onProgress,
+        });
+        output = workerResult.blob;
+        completed = true;
+        break;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") throw error;
+
+        if (isRecoverableTargetSizeFailure(error)) {
+          const next = reduceTargetResolution(finalResolution);
+          const nextPixels = next.width * next.height;
+          const currentPixels = finalResolution.width * finalResolution.height;
+
+          if (nextPixels < currentPixels) {
+            finalResolution = next;
+            options.onProgress?.("optimizing-resolution");
+            continue;
+          }
+        }
+
+        const workerUnavailable = /worker|offscreen|module|unavailable/i.test(
+          error instanceof Error ? error.message : ""
+        );
+        if (!workerUnavailable) throw error;
+
+        output = await renderTargetOnMainThread(
+          file,
+          finalResolution,
+          outputType,
+          targetBytes,
+          options.signal,
+          options.onProgress
+        );
+        completed = true;
+        break;
+      }
+    }
+
+    if (!completed) {
+      throw new Error(
+        `This device could not create a small enough working image for the ${options.targetKB} KB target. Try a larger target size.`
+      );
+    }
+  }
+
+  if (!output) {
+    throw new Error("Image compression did not produce an output file.");
+  }
 
   const resultDimensions = await getImageDimensions(output, options.signal);
-  if (resultDimensions.width !== original.width || resultDimensions.height !== original.height) {
+
+  if (resolution.changed) {
+    if (
+      resultDimensions.width !== finalResolution.width ||
+      resultDimensions.height !== finalResolution.height
+    ) {
+      throw new Error(
+        `Target compression produced ${resultDimensions.width}×${resultDimensions.height} instead of the planned ${finalResolution.width}×${finalResolution.height}. The result was rejected.`
+      );
+    }
+  } else if (
+    resultDimensions.width !== original.width ||
+    resultDimensions.height !== original.height
+  ) {
     throw new Error(
       `Target compression produced ${resultDimensions.width}×${resultDimensions.height} instead of ${original.width}×${original.height}. The result was rejected.`
     );
@@ -693,7 +941,7 @@ export async function compressToTargetSize(
 
   if (output.size > targetBytes) {
     throw new Error(
-      `Unable to reach ${options.targetKB} KB while keeping the original ${original.width}×${original.height} dimensions. The image was not downscaled.`
+      `Unable to reach ${options.targetKB} KB at ${resultDimensions.width}×${resultDimensions.height}. Try a larger target size.`
     );
   }
 
