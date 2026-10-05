@@ -1,5 +1,4 @@
 import exifr from "exifr";
-
 import {
   throwIfImageProcessingAborted,
   validateImageDimensions,
@@ -19,27 +18,29 @@ export interface ImageMetadata {
 
 function formatBytes(bytes: number): string {
   if (!bytes) return "0 B";
-
   const units = ["B", "KB", "MB", "GB"];
   const index = Math.min(
     Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1
+    units.length - 1,
   );
+  return `${(bytes / Math.pow(1024, index)).toFixed(2)} ${units[index]}`;
+}
 
-  return `${(bytes / Math.pow(1024, index)).toFixed(2)} ${
-    units[index]
-  }`;
+function simplifyAspectRatio(width: number, height: number): string {
+  if (!width || !height) return "Unknown";
+  let a = Math.abs(Math.round(width));
+  let b = Math.abs(Math.round(height));
+  while (b !== 0) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return `${Math.round(width / a)}:${Math.round(height / a)}`;
 }
 
 function formatMetadataValue(value: unknown): unknown {
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(formatMetadataValue);
-  }
-
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(formatMetadataValue);
   if (value && typeof value === "object") {
     try {
       return JSON.stringify(value);
@@ -47,69 +48,39 @@ function formatMetadataValue(value: unknown): unknown {
       return String(value);
     }
   }
-
   return value;
 }
 
-function simplifyAspectRatio(
-  width: number,
-  height: number
-): string {
-  if (!width || !height) return "Unknown";
-
-  function gcd(a: number, b: number): number {
-    while (b !== 0) {
-      const remainder = a % b;
-      a = b;
-      b = remainder;
-    }
-    return Math.abs(a);
-  }
-
-  const divisor = gcd(width, height);
-
-  return `${Math.round(width / divisor)}:${Math.round(
-    height / divisor
-  )}`;
-}
-
 export function getImageDimensions(
-  file: Blob
+  file: Blob,
 ): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const image = document.createElement("img");
 
+    const cleanup = () => URL.revokeObjectURL(url);
+
     image.onload = () => {
-      const width = image.naturalWidth;
-      const height = image.naturalHeight;
-
-      URL.revokeObjectURL(url);
-
+      cleanup();
       try {
-        validateImageDimensions(width, height);
-        resolve({ width, height });
+        validateImageDimensions(image.naturalWidth, image.naturalHeight);
+        resolve({ width: image.naturalWidth, height: image.naturalHeight });
       } catch (error) {
         reject(error);
       }
     };
 
     image.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(
-        new Error("Unable to read image dimensions.")
-      );
+      cleanup();
+      reject(new Error("Unable to read image dimensions."));
     };
 
     image.src = url;
   });
 }
 
-export async function getImageMetadata(
-  file: File
-): Promise<ImageMetadata> {
+export async function getImageMetadata(file: File): Promise<ImageMetadata> {
   const dimensions = await getImageDimensions(file);
-
   let exif: Record<string, unknown> = {};
 
   try {
@@ -132,10 +103,7 @@ export async function getImageMetadata(
       exif = parsed as Record<string, unknown>;
     }
   } catch (error) {
-    console.warn(
-      "EXIF metadata could not be parsed:",
-      error
-    );
+    console.warn("EXIF metadata could not be parsed:", error);
   }
 
   const metadata: ImageMetadata = {
@@ -143,15 +111,10 @@ export async function getImageMetadata(
     fileType: file.type || "Unknown",
     fileSize: file.size,
     fileSizeFormatted: formatBytes(file.size),
-    lastModified: new Date(
-      file.lastModified
-    ).toISOString(),
+    lastModified: new Date(file.lastModified).toISOString(),
     width: dimensions.width,
     height: dimensions.height,
-    aspectRatio: simplifyAspectRatio(
-      dimensions.width,
-      dimensions.height
-    ),
+    aspectRatio: simplifyAspectRatio(dimensions.width, dimensions.height),
   };
 
   for (const [key, value] of Object.entries(exif)) {
@@ -161,143 +124,235 @@ export async function getImageMetadata(
   return metadata;
 }
 
-export function imageToDataURL(
-  file: File
+async function blobToBase64(
+  blob: Blob,
+  signal?: AbortSignal,
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
+  const reader = blob.stream().getReader();
+  const chunks: string[] = [];
+  let carry = new Uint8Array(0);
 
-    reader.onload = () => {
-      const value = reader.result;
+  const encodeChunk = (bytes: Uint8Array): string => {
+    let binary = "";
+    const step = 0x8000;
 
-      if (typeof value !== "string") {
-        reject(
-          new Error(
-            "Unable to convert image to Data URL."
-          )
-        );
-        return;
+    for (let offset = 0; offset < bytes.length; offset += step) {
+      throwIfImageProcessingAborted(signal);
+      const part = bytes.subarray(offset, Math.min(offset + step, bytes.length));
+      binary += String.fromCharCode(...part);
+    }
+
+    return btoa(binary);
+  };
+
+  try {
+    while (true) {
+      throwIfImageProcessingAborted(signal);
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      let data = value instanceof Uint8Array ? value : new Uint8Array(value);
+
+      if (carry.length) {
+        const merged = new Uint8Array(carry.length + data.length);
+        merged.set(carry);
+        merged.set(data, carry.length);
+        data = merged;
+        carry = new Uint8Array(0);
       }
 
-      resolve(value);
-    };
+      const usableLength = data.length - (data.length % 3);
+      if (usableLength > 0) {
+        chunks.push(encodeChunk(data.subarray(0, usableLength)));
+      }
 
-    reader.onerror = () => {
-      reject(
-        new Error("Unable to read the image file.")
-      );
-    };
+      if (usableLength < data.length) {
+        carry = data.slice(usableLength);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 
-    reader.readAsDataURL(file);
-  });
+  if (carry.length) {
+    chunks.push(encodeChunk(carry));
+  }
+
+  return chunks.join("");
+}
+
+export async function imageToDataURL(
+  file: File,
+  signal?: AbortSignal,
+): Promise<string> {
+  throwIfImageProcessingAborted(signal);
+  const base64 = await blobToBase64(file, signal);
+  return `data:${file.type || "application/octet-stream"};base64,${base64}`;
 }
 
 export interface PickedColor {
   hex: string;
-  rgb: {
-    r: number;
-    g: number;
-    b: number;
-  };
+  rgb: { r: number; g: number; b: number };
   rgba: string;
 }
 
 export async function pickColor(
   file: File,
   x: number,
-  y: number
+  y: number,
 ): Promise<PickedColor> {
-  const { width: naturalWidth, height: naturalHeight } =
-    await getImageDimensions(file);
+  const { width, height } = await getImageDimensions(file);
+  const sourceX = Math.max(0, Math.min(width - 1, Math.round(x)));
+  const sourceY = Math.max(0, Math.min(height - 1, Math.round(y)));
 
-  throwIfImageProcessingAborted(undefined);
+  let pixel: Uint8ClampedArray;
 
-  const image = await new Promise<HTMLImageElement>(
-    (resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = document.createElement("img");
+  if (typeof createImageBitmap === "function") {
+    const maxSide = 2048;
+    const scale = Math.min(1, maxSide / Math.max(width, height));
+    const renderWidth = Math.max(1, Math.round(width * scale));
+    const renderHeight = Math.max(1, Math.round(height * scale));
+    const bitmap = await createImageBitmap(file, {
+      resizeWidth: renderWidth,
+      resizeHeight: renderHeight,
+      imageOrientation: "from-image",
+    });
 
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        resolve(img);
-      };
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("Canvas is not supported by this browser.");
 
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(
-          new Error(
-            "Unable to load image for color picking."
-          )
-        );
-      };
-
-      img.src = url;
+      const renderX = Math.min(renderWidth - 1, Math.floor(sourceX * scale));
+      const renderY = Math.min(renderHeight - 1, Math.floor(sourceY * scale));
+      context.drawImage(bitmap, renderX, renderY, 1, 1, 0, 0, 1, 1);
+      pixel = context.getImageData(0, 0, 1, 1).data;
+      canvas.width = 1;
+      canvas.height = 1;
+    } finally {
+      bitmap.close();
     }
-  );
+  } else {
+    const url = URL.createObjectURL(file);
+    const image = document.createElement("img");
 
-  /*
-   * Safety validation above guarantees the source is within the browser
-   * processing budget before a full-resolution canvas is allocated.
-   */
-  const canvas = document.createElement("canvas");
-  canvas.width = naturalWidth;
-  canvas.height = naturalHeight;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("Unable to load image for color picking."));
+        image.src = url;
+      });
 
-  const context = canvas.getContext("2d", {
-    willReadFrequently: true,
-  });
-
-  if (!context) {
-    throw new Error(
-      "Canvas is not supported by this browser."
-    );
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("Canvas is not supported by this browser.");
+      context.drawImage(image, sourceX, sourceY, 1, 1, 0, 0, 1, 1);
+      pixel = context.getImageData(0, 0, 1, 1).data;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
 
-  context.drawImage(
-    image,
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
-
-  const safeX = Math.max(
-    0,
-    Math.min(
-      canvas.width - 1,
-      Math.round(x)
-    )
-  );
-
-  const safeY = Math.max(
-    0,
-    Math.min(
-      canvas.height - 1,
-      Math.round(y)
-    )
-  );
-
-  const pixel = context.getImageData(
-    safeX,
-    safeY,
-    1,
-    1
-  ).data;
-
-  const r = pixel[0];
-  const g = pixel[1];
-  const b = pixel[2];
-  const a = pixel[3] / 255;
-
-  const hex = `#${[r, g, b]
-    .map((value) =>
-      value.toString(16).padStart(2, "0")
-    )
-    .join("")}`;
+  const [r, g, b, alphaByte] = pixel;
+  const alpha = alphaByte / 255;
+  const hex = `#${[r, g, b].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
 
   return {
     hex,
     rgb: { r, g, b },
-    rgba: `rgba(${r}, ${g}, ${b}, ${a.toFixed(2)})`,
+    rgba: `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(2)})`,
   };
+}
+
+function stripJpegMetadata(bytes: Uint8Array): Uint8Array {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return bytes;
+
+  const output: number[] = [0xff, 0xd8];
+  let offset = 2;
+
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      output.push(bytes[offset++]);
+      continue;
+    }
+
+    const marker = bytes[offset + 1];
+    if (marker === undefined) break;
+
+    if (marker === 0xda) {
+      for (; offset < bytes.length; offset++) output.push(bytes[offset]);
+      break;
+    }
+
+    if (marker === 0xd9) {
+      output.push(0xff, 0xd9);
+      break;
+    }
+
+    const length = ((bytes[offset + 2] ?? 0) << 8) | (bytes[offset + 3] ?? 0);
+    if (length < 2 || offset + 2 + length > bytes.length) {
+      for (; offset < bytes.length; offset++) output.push(bytes[offset]);
+      break;
+    }
+
+    const remove = marker === 0xe1 || marker === 0xed || marker === 0xfe;
+    if (!remove) {
+      for (let index = 0; index < 2 + length; index++) {
+        output.push(bytes[offset + index]);
+      }
+    }
+
+    offset += 2 + length;
+  }
+
+  return new Uint8Array(output);
+}
+
+export async function removeImageMetadata(file: File): Promise<Blob> {
+  if (file.type === "image/jpeg") {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const stripped = stripJpegMetadata(bytes);
+    const blobBytes = new Uint8Array(bytes.byteLength);
+blobBytes.set(bytes);
+
+return new Blob([blobBytes.buffer], {
+  type: "image/jpeg",
+});
+  }
+
+  if (file.type === "image/png" || file.type === "image/webp") {
+    const url = URL.createObjectURL(file);
+    const image = document.createElement("img");
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("Unable to load image."));
+        image.src = url;
+      });
+
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Canvas is not supported.");
+      context.drawImage(image, 0, 0);
+
+      return await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (blob) => (blob ? resolve(blob) : reject(new Error("Unable to remove image metadata."))),
+          file.type,
+          file.type === "image/png" ? undefined : 0.92,
+        );
+      });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  return new Blob([file], { type: file.type || "application/octet-stream" });
 }
