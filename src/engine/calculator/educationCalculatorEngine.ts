@@ -1,68 +1,92 @@
-export function calculateGPA(
-  gradePoints: number,
-  credits: number
-) {
-  if (
-    !Number.isFinite(gradePoints) ||
-    !Number.isFinite(credits) ||
-    gradePoints < 0 ||
-    credits <= 0
-  ) {
-    throw new Error(
-      "Please enter valid GPA values."
-    );
-  }
+import {
+  assertFinite,
+  roundNumber
+} from "./calculatorMath";
 
-  // The UI supplies total weighted grade points and total credits.
-  // GPA = sum(grade point × credit) / sum(credits).
-  if (gradePoints > 10 * credits) {
+export interface GPASubject {
+  gradePoint: number;
+  credits: number;
+}
+
+export function calculateGPA(
+  subjects: GPASubject[]
+): {
+  gpa: number;
+  totalCredits: number;
+} {
+  if (!subjects.length)
     throw new Error(
-      "Total weighted grade points cannot exceed 10 times the total credits."
+      "Please add at least one subject."
     );
+
+  let weighted = 0;
+  let credits = 0;
+
+  for (const subject of subjects) {
+    assertFinite(
+      subject.gradePoint,
+      subject.credits
+    );
+
+    if (
+      subject.gradePoint < 0 ||
+      subject.credits <= 0
+    )
+      throw new Error(
+        "Grade points cannot be negative and credits must be greater than zero."
+      );
+
+    weighted +=
+      subject.gradePoint *
+      subject.credits;
+
+    credits += subject.credits;
   }
 
   return {
-    gpa:
-      gradePoints / credits
+    gpa: roundNumber(
+      weighted / credits,
+      2
+    ),
+    totalCredits: roundNumber(
+      credits,
+      2
+    )
   };
 }
 
 export function calculateCGPA(
   semesterValues: number[]
-) {
-  const values =
-    semesterValues.filter(
-      (value) =>
-        Number.isFinite(value)
-    );
-
-  if (!values.length) {
+): {
+  cgpa: number;
+  semesters: number;
+} {
+  if (!semesterValues.length)
     throw new Error(
       "Please enter at least one semester GPA."
     );
-  }
+
+  assertFinite(...semesterValues);
 
   if (
-    values.some(
-      (value) =>
-        value < 0 ||
-        value > 10
+    semesterValues.some(
+      (value) => value < 0
     )
-  ) {
+  )
     throw new Error(
-      "Each semester GPA must be between 0 and 10."
-    );
-  }
-
-  const total =
-    values.reduce(
-      (sum, value) =>
-        sum + value,
-      0
+      "GPA cannot be negative."
     );
 
   return {
-    cgpa:
-      total / values.length
+    cgpa: roundNumber(
+      semesterValues.reduce(
+        (sum, value) =>
+          sum + value,
+        0
+      ) / semesterValues.length,
+      2
+    ),
+    semesters:
+      semesterValues.length
   };
 }

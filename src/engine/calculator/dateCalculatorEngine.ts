@@ -1,65 +1,117 @@
+function parseDateOnly(
+  value: string
+): { year: number; month: number; day: number } {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+
+  if (!match)
+    throw new Error("Please enter a valid date.");
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+
+  const check = new Date(
+    Date.UTC(year, month - 1, day)
+  );
+
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() !== month - 1 ||
+    check.getUTCDate() !== day
+  )
+    throw new Error("Please enter a valid date.");
+
+  return { year, month, day };
+}
+
+function daySerial(
+  value: {
+    year: number;
+    month: number;
+    day: number;
+  }
+): number {
+  return (
+    Date.UTC(
+      value.year,
+      value.month - 1,
+      value.day
+    ) / 86400000
+  );
+}
+
 export function calculateAge(
   birthDate: string,
   targetDate: string
 ) {
-  const birth =
-    parseDate(birthDate);
+  const birth = parseDateOnly(birthDate);
+  const target = parseDateOnly(targetDate);
 
-  const target =
-    parseDate(targetDate);
-
-  if (target < birth) {
+  if (daySerial(target) < daySerial(birth))
     throw new Error(
       "Target date cannot be before birth date."
     );
-  }
 
-  let years =
-    target.getFullYear() -
-    birth.getFullYear();
+  let years = target.year - birth.year;
+
+  let anniversaryMonth = birth.month;
+  let anniversaryDay = birth.day;
+
+  if (
+    birth.month === 2 &&
+    birth.day === 29 &&
+    !isLeap(target.year)
+  )
+    anniversaryDay = 28;
+
+  if (
+    target.month < anniversaryMonth ||
+    (target.month === anniversaryMonth &&
+      target.day < anniversaryDay)
+  )
+    years -= 1;
+
+  const anchorYear = birth.year + years;
+
+  const anchorDay =
+    birth.month === 2 &&
+    birth.day === 29 &&
+    !isLeap(anchorYear)
+      ? 28
+      : birth.day;
+
+  const anchor = {
+    year: anchorYear,
+    month: birth.month,
+    day: anchorDay
+  };
 
   let months =
-    target.getMonth() -
-    birth.getMonth();
+    (target.year - anchor.year) * 12 +
+    target.month -
+    anchor.month;
 
-  let days =
-    target.getDate() -
-    birth.getDate();
+  if (target.day < anchor.day)
+    months -= 1;
 
-  if (days < 0) {
-    months--;
+  months = Math.max(0, months);
 
-    const previousMonth =
-      new Date(
-        target.getFullYear(),
-        target.getMonth(),
-        0
-      );
+  const monthAnchor = addMonths(
+    anchor,
+    months
+  );
 
-    days +=
-      previousMonth.getDate();
-  }
-
-  if (months < 0) {
-    years--;
-    months += 12;
-  }
-
-  const milliseconds =
-    target.getTime() -
-    birth.getTime();
-
-  const totalDays =
-    Math.floor(
-      milliseconds /
-        (1000 * 60 * 60 * 24)
-    );
+  const days =
+    daySerial(target) -
+    daySerial(monthAnchor);
 
   return {
     years,
     months,
     days,
-    totalDays
+    totalDays: Math.floor(
+      daySerial(target) - daySerial(birth)
+    )
   };
 }
 
@@ -67,23 +119,12 @@ export function calculateDateDifference(
   startDate: string,
   endDate: string
 ) {
-  const start =
-    parseDate(startDate);
-
-  const end =
-    parseDate(endDate);
-
-  const milliseconds =
-    end.getTime() -
-    start.getTime();
+  const start = parseDateOnly(startDate);
+  const end = parseDateOnly(endDate);
 
   const days =
-    Math.abs(
-      Math.floor(
-        milliseconds /
-          (1000 * 60 * 60 * 24)
-      )
-    );
+    daySerial(end) -
+    daySerial(start);
 
   return {
     days,
@@ -99,69 +140,76 @@ export function calculateTimeDuration(
 ) {
   if (
     !Number.isFinite(start) ||
-    !Number.isFinite(end)
-  ) {
-    throw new Error(
-      "Please enter valid times."
-    );
-  }
-
-  if (
+    !Number.isFinite(end) ||
     start < 0 ||
     end < 0 ||
-    start > 24 ||
-    end > 24
-  ) {
+    start >= 24 ||
+    end >= 24
+  )
     throw new Error(
-      "Time must be between 0 and 24 hours."
+      "Time must be between 0:00 and 23:59."
     );
-  }
 
-  let duration =
-    end - start;
+  let duration = end - start;
 
-  if (duration < 0) {
+  if (duration < 0)
     duration += 24;
-  }
 
-  // Convert once to whole minutes so the displayed result can never
-  // become an invalid value such as 9 hours 60 minutes.
-  const totalMinutes =
-    Math.round(duration * 60);
+  const hours = Math.floor(duration);
+
+  const minutes = Math.round(
+    (duration - hours) * 60
+  );
+
+  if (minutes === 60)
+    return {
+      hours: (hours + 1) % 24,
+      minutes: 0,
+      decimalHours: hours + 1
+    };
 
   return {
-    hours: Math.floor(
-      totalMinutes / 60
-    ),
-    minutes:
-      totalMinutes % 60,
-    decimalHours:
-      totalMinutes / 60
+    hours,
+    minutes,
+    decimalHours: duration
   };
 }
 
-function parseDate(
-  value: string
-): Date {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new Error(
-      "Please enter a valid date."
-    );
-  }
+function addMonths(
+  date: {
+    year: number;
+    month: number;
+    day: number;
+  },
+  months: number
+) {
+  const d = new Date(
+    Date.UTC(
+      date.year,
+      date.month - 1 + months,
+      1
+    )
+  );
 
-  const date =
-    new Date(`${value}T00:00:00`);
+  const max = new Date(
+    Date.UTC(
+      d.getUTCFullYear(),
+      d.getUTCMonth() + 1,
+      0
+    )
+  ).getUTCDate();
 
-  if (
-    Number.isNaN(
-      date.getTime()
-    ) ||
-    date.toISOString().slice(0, 10) !== value
-  ) {
-    throw new Error(
-      "Please enter a valid date."
-    );
-  }
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: Math.min(date.day, max)
+  };
+}
 
-  return date;
+function isLeap(year: number) {
+  return (
+    year % 4 === 0 &&
+    (year % 100 !== 0 ||
+      year % 400 === 0)
+  );
 }

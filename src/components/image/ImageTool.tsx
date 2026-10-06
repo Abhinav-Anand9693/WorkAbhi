@@ -14,7 +14,6 @@ import {
   resizeByWidth,
   resizeByHeight,
   resizeByPercentage,
-  createImagePreviewURL,
 } from "@/engine/image/imageCompressionEngine";
 
 import {
@@ -55,27 +54,6 @@ type OutputFormat =
   | "image/jpeg"
   | "image/png"
   | "image/webp";
-
-const COMPRESSION_TOOL_IDS = new Set([
-  "image-compressor",
-  "compress-image-to-50kb",
-  "compress-image-to-100kb",
-  "compress-image-to-200kb",
-  "compress-image-to-500kb",
-  "compress-image-to-1mb",
-  "jpg-compressor",
-  "png-compressor",
-  "webp-compressor",
-]);
-
-const MAX_COMPRESSION_FILES = 20;
-
-interface CompressionBatchResult {
-  fileName: string;
-  originalSize: number;
-  result: Blob | null;
-  error?: string;
-}
 
 interface ProcessingSettings {
   quality: number;
@@ -566,85 +544,56 @@ async function processCanvasImage(
   );
 }
 
-function throwIfBatchAborted(signal: AbortSignal): void {
-  if (signal.aborted) {
-    throw new DOMException("Processing cancelled.", "AbortError");
+async function createSafePreviewUrl(file: File): Promise<string> {
+  const MAX_PREVIEW_DIMENSION = 1600;
+
+  if (typeof createImageBitmap !== "function") {
+    return URL.createObjectURL(file);
   }
-}
 
-function yieldBatchToBrowser(signal: AbortSignal): Promise<void> {
-  throwIfBatchAborted(signal);
+  try {
+    const bitmap = await createImageBitmap(file, {
+      resizeWidth: MAX_PREVIEW_DIMENSION,
+      resizeQuality: "high",
+      imageOrientation: "from-image",
+    });
 
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(resolve, 0);
-    signal.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timer);
-        reject(new DOMException("Processing cancelled.", "AbortError"));
-      },
-      { once: true }
+    const scale = Math.min(
+      1,
+      MAX_PREVIEW_DIMENSION / bitmap.width,
+      MAX_PREVIEW_DIMENSION / bitmap.height
     );
-  });
-}
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
 
-async function compressSingleFile(
-  file: File,
-  toolId: string,
-  quality: number,
-  signal: AbortSignal,
-  onProgress: (stage: "idle" | "reading" | "optimizing-resolution" | "compressing" | "finalizing" | "complete") => void
-): Promise<Blob> {
-  if (toolId === "image-compressor") {
-    return compressImage(file, { quality, signal, onProgress });
-  }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      bitmap.close();
+      return URL.createObjectURL(file);
+    }
 
-  if (toolId === "jpg-compressor") {
-    return compressImage(file, {
-      quality,
-      outputType: "image/jpeg",
-      signal,
-      onProgress,
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+
+    const previewBlob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/jpeg", 0.82);
     });
+    canvas.width = 1;
+    canvas.height = 1;
+
+    if (!previewBlob) {
+      return URL.createObjectURL(file);
+    }
+
+    return URL.createObjectURL(previewBlob);
+  } catch {
+    return URL.createObjectURL(file);
   }
-
-  if (toolId === "png-compressor") {
-    return compressImage(file, {
-      quality: 1,
-      outputType: "image/png",
-      signal,
-      onProgress,
-    });
-  }
-
-  if (toolId === "webp-compressor") {
-    return compressImage(file, {
-      quality,
-      outputType: "image/webp",
-      signal,
-      onProgress,
-    });
-  }
-
-  const targetMap: Record<string, number> = {
-    "compress-image-to-50kb": 50,
-    "compress-image-to-100kb": 100,
-    "compress-image-to-200kb": 200,
-    "compress-image-to-500kb": 500,
-    "compress-image-to-1mb": 1024,
-  };
-
-  const targetKB = targetMap[toolId];
-  if (targetKB) {
-    return compressToTargetSize(file, {
-      targetKB,
-      outputType: "image/jpeg",
-      signal,
-      onProgress,
-    });
-  }
-
-  throw new Error("Unsupported compression tool.");
 }
 
 export default function ImageTool({
@@ -681,9 +630,6 @@ export default function ImageTool({
     setResultFiles,
   ] = useState<Blob[]>([]);
 
-  const [compressionResults, setCompressionResults] =
-    useState<CompressionBatchResult[]>([]);
-
   const [settings, setSettings] =
     useState<ProcessingSettings>(
       DEFAULT_SETTINGS
@@ -704,9 +650,6 @@ export default function ImageTool({
 
 const abortControllerRef =
   useRef<AbortController | null>(null);
-
-  const previewRequestRef =
-    useRef(0);
   const [error, setError] =
     useState("");
 
@@ -759,7 +702,6 @@ const abortControllerRef =
     );
   }
   function cancelProcessing() {
-    previewRequestRef.current += 1;
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     setLoading(false);
@@ -784,26 +726,20 @@ const abortControllerRef =
    * Determine whether this tool supports
    * multiple images.
    */
-  const isCompressionTool =
-    COMPRESSION_TOOL_IDS.has(toolId);
-
   const isMultiple =
     definition.multiple === true ||
-    isCompressionTool ||
     toolId === "image-overlay" ||
     toolId === "image-collage-maker" ||
     toolId === "image-merger";
 
   const maxFiles =
-    isCompressionTool
-      ? MAX_COMPRESSION_FILES
-      : toolId === "image-merger"
-        ? 20
-        : toolId === "image-collage-maker"
-          ? 12
-          : toolId === "image-overlay"
-            ? 2
-            : 1;
+    toolId === "image-merger"
+      ? 20
+      : toolId === "image-collage-maker"
+        ? 12
+        : toolId === "image-overlay"
+          ? 2
+          : 1;
 
   /**
    * Handle file selection.
@@ -812,15 +748,12 @@ const abortControllerRef =
    * For multiple-image tools we APPEND
    * new files instead of replacing them.
    */
-  function handleFiles(
+  async function handleFiles(
     selectedFiles: File[]
   ) {
     if (!selectedFiles.length) {
       return;
     }
-
-    // Invalidate any preview generation still running for a previous file/result.
-    previewRequestRef.current += 1;
 
     let nextFiles: File[];
 
@@ -856,44 +789,27 @@ const abortControllerRef =
     }
 
     /**
-     * Compression is intentionally preview-free. A preview can force the browser
-     * to decode a large source image and compete with the actual compression job
-     * for the same limited device memory.
+     * If the first image changed,
+     * recreate the original preview.
      */
-    if (isCompressionTool) {
-      previewRequestRef.current += 1;
-
-      if (originalPreview) {
-        URL.revokeObjectURL(originalPreview);
-      }
-
-      setOriginalPreview(null);
-    } else if (
+    if (
       !files.length ||
       nextFiles[0] !== files[0]
     ) {
       if (originalPreview) {
-        URL.revokeObjectURL(originalPreview);
+        URL.revokeObjectURL(
+          originalPreview
+        );
       }
 
-      setOriginalPreview(null);
+      const previewUrl =
+        await createSafePreviewUrl(
+          nextFiles[0]
+        );
 
-      const requestId = previewRequestRef.current;
-      const previewFile = nextFiles[0];
-
-      void createImagePreviewURL(previewFile)
-        .then((previewUrl) => {
-          if (requestId !== previewRequestRef.current) {
-            URL.revokeObjectURL(previewUrl);
-            return;
-          }
-
-          setOriginalPreview(previewUrl);
-        })
-        .catch(() => {
-          if (requestId !== previewRequestRef.current) return;
-          setOriginalPreview(URL.createObjectURL(previewFile));
-        });
+      setOriginalPreview(
+        previewUrl
+      );
     }
 
     if (resultPreview) {
@@ -906,7 +822,6 @@ const abortControllerRef =
 
     setResult(null);
     setResultFiles([]);
-    setCompressionResults([]);
     setResultPreview(null);
 
     setMetadata(null);
@@ -920,8 +835,6 @@ const abortControllerRef =
    * Reset everything.
    */
   function resetTool() {
-    previewRequestRef.current += 1;
-
     if (originalPreview) {
       URL.revokeObjectURL(
         originalPreview
@@ -938,7 +851,6 @@ const abortControllerRef =
 
     setResult(null);
     setResultFiles([]);
-    setCompressionResults([]);
 
     setOriginalPreview(null);
     setResultPreview(null);
@@ -980,67 +892,6 @@ const abortControllerRef =
     setResultFiles([]);
 
     try {
-      if (isCompressionTool) {
-        const batch: CompressionBatchResult[] = [];
-        const outputs: Blob[] = [];
-
-        setCompressionResults([]);
-
-        // Process sequentially: never decode multiple large images concurrently.
-        for (const file of files) {
-          throwIfBatchAborted(controller.signal);
-
-          try {
-            const output = await compressSingleFile(
-              file,
-              toolId,
-              settings.quality / 100,
-              controller.signal,
-              setProcessingStage
-            );
-
-            batch.push({
-              fileName: file.name,
-              originalSize: file.size,
-              result: output,
-            });
-            outputs.push(output);
-            setCompressionResults([...batch]);
-          } catch (fileError) {
-            if (
-              fileError instanceof DOMException &&
-              fileError.name === "AbortError"
-            ) {
-              throw fileError;
-            }
-
-            batch.push({
-              fileName: file.name,
-              originalSize: file.size,
-              result: null,
-              error:
-                fileError instanceof Error
-                  ? fileError.message
-                  : "Unable to process this image on this device.",
-            });
-            setCompressionResults([...batch]);
-          }
-
-          await yieldBatchToBrowser(controller.signal);
-        }
-
-        if (!outputs.length) {
-          throw new Error(
-            "None of the selected images could be processed on this device."
-          );
-        }
-
-        setResult(outputs[outputs.length - 1]);
-        setResultFiles(outputs);
-        setProcessingStage("complete");
-        return;
-      }
-
       const primaryFile =
         files[0];
 
@@ -1066,8 +917,6 @@ const abortControllerRef =
             {
               quality:
                 settings.quality / 100,
-              signal: controller.signal,
-              onProgress: setProcessingStage,
             }
           );
       }
@@ -1139,10 +988,9 @@ const abortControllerRef =
             primaryFile,
             {
               quality: 1,
+
               outputType:
                 "image/png",
-              signal: controller.signal,
-              onProgress: setProcessingStage,
             }
           );
       }
@@ -1745,21 +1593,14 @@ const abortControllerRef =
         );
       }
 
-      const requestId = ++previewRequestRef.current;
-      void createImagePreviewURL(output, controller.signal)
-        .then((previewUrl) => {
-          if (requestId !== previewRequestRef.current) {
-            URL.revokeObjectURL(previewUrl);
-            return;
-          }
+      const previewUrl =
+        URL.createObjectURL(
+          output
+        );
 
-          setResultPreview(previewUrl);
-        })
-        .catch((previewError) => {
-          if (requestId !== previewRequestRef.current) return;
-          if (previewError instanceof DOMException && previewError.name === "AbortError") return;
-          setResultPreview(URL.createObjectURL(output));
-        });
+      setResultPreview(
+        previewUrl
+      );
     } catch (err) {
       if (
         err instanceof DOMException &&
@@ -2339,7 +2180,7 @@ const abortControllerRef =
           disabled={loading || !files.length}
           className="rounded-xl bg-primary px-6 py-3 font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {loading ? (isCompressionTool ? "Compressing..." : "Processing...") : (isCompressionTool ? "Compress Images" : "Process Image")}
+          {loading ? "Processing..." : "Process Image"}
         </button>
 
         {loading && (
@@ -2356,14 +2197,14 @@ const abortControllerRef =
       {loading && (
         <div className="mt-5 rounded-xl border bg-muted/20 p-4">
           <p className="text-sm font-medium">
-            {processingStage === "reading" && (isCompressionTool ? "Reading images..." : "Reading image...")}
+            {processingStage === "reading" && "Reading image..."}
             {processingStage === "optimizing-resolution" && "Optimizing resolution..."}
             {processingStage === "compressing" && "Finding optimal quality..."}
             {processingStage === "finalizing" && "Finalizing result..."}
           </p>
 
           <p className="mt-1 text-xs text-muted-foreground">
-            Your images are processed locally in your browser. Large images are processed one at a time to protect device memory.
+            Your image is being processed locally in your browser.
           </p>
         </div>
       )}
@@ -2521,71 +2362,10 @@ const abortControllerRef =
       )}
 
       {/* ========================================
-          COMPRESSION BATCH RESULTS
-      ======================================== */}
-
-      {isCompressionTool && compressionResults.length > 0 && (
-        <section className="rounded-2xl border bg-background p-5 sm:p-6">
-          <h2 className="text-lg font-semibold">Compression results</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Processed one image at a time to keep memory usage low. Standard compression preserves dimensions; target-size tools may proportionally reduce resolution for very large photos so mobile browsers can process them safely.
-          </p>
-
-          <div className="mt-5 space-y-3">
-            {compressionResults.map((item, index) => {
-              const saved =
-                item.result && item.originalSize > 0
-                  ? Math.max(0, Math.round(((item.originalSize - item.result.size) / item.originalSize) * 100))
-                  : 0;
-
-              return (
-                <div
-                  key={`${item.fileName}-${index}`}
-                  className="rounded-xl border p-4"
-                >
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">
-                        {index + 1}. {item.fileName}
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Original: {formatBytes(item.originalSize)}
-                        {item.result ? ` • Result: ${formatBytes(item.result.size)} • Saved: ${saved}%` : ""}
-                      </p>
-                    </div>
-
-                    {item.result ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          downloadBlob(
-                            item.result as Blob,
-                            `${item.fileName.replace(/\.[^.]+$/, "")}-compressed.${getOutputExtension((item.result as Blob).type)}`
-                          )
-                        }
-                        className="shrink-0 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-                      >
-                        Download
-                      </button>
-                    ) : (
-                      <span className="text-sm text-destructive">
-                        {item.error}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* ========================================
           NORMAL IMAGE PREVIEW
       ======================================== */}
 
-      {!isCompressionTool &&
-        files.length > 0 &&
+      {files.length > 0 &&
         toolId !==
           "image-color-picker" &&
         toolId !==

@@ -1,108 +1,90 @@
+import {
+  assertFinite,
+  roundMoney
+} from "./calculatorMath";
+
 export function calculateFD(
   principal: number,
   annualRate: number,
   years: number,
   frequency = 4
 ) {
-  validate(
+  assertFinite(
     principal,
     annualRate,
-    years
+    years,
+    frequency
   );
 
   if (
-    !Number.isFinite(frequency) ||
+    principal <= 0 ||
+    annualRate < 0 ||
+    years <= 0 ||
     frequency <= 0
-  ) {
+  )
     throw new Error(
-      "Invalid compounding frequency."
+      "Please enter valid fixed-deposit values."
     );
-  }
 
   const maturity =
     principal *
-    Math.pow(
-      1 +
-        annualRate /
-          100 /
-          frequency,
-      frequency * years
-    );
+    (1 + annualRate / 100 / frequency) **
+      (frequency * years);
 
   return {
-    principal,
-    interest:
-      maturity - principal,
-    maturity
+    principal: roundMoney(principal),
+    interest: roundMoney(
+      maturity - principal
+    ),
+    maturity: roundMoney(maturity)
   };
 }
+
+/** RD estimate using monthly deposits and monthly equivalent compounding. Actual bank RD maturity can differ by product conventions. */
 
 export function calculateRD(
   monthlyDeposit: number,
   annualRate: number,
   months: number
 ) {
-  validate(
+  assertFinite(
     monthlyDeposit,
     annualRate,
     months
   );
 
   if (
-    !Number.isInteger(months) ||
-    months <= 0
-  ) {
+    monthlyDeposit <= 0 ||
+    annualRate < 0 ||
+    months <= 0 ||
+    !Number.isInteger(months)
+  )
     throw new Error(
-      "RD tenure must be a whole number of months greater than zero."
+      "Monthly deposit and tenure must be valid positive values."
     );
-  }
 
-  // Estimate using monthly compounding with each deposit made at the
-  // beginning of its month. The convention is deterministic and avoids
-  // the earlier off-by-one ambiguity in the accumulation loop.
   const monthlyRate =
     annualRate / 12 / 100;
 
-  const growth =
-    1 + monthlyRate;
-
-  let maturity =
-    0;
+  let maturity = 0;
 
   for (
     let month = 0;
     month < months;
-    month++
+    month += 1
   ) {
-    maturity =
-      (maturity +
-        monthlyDeposit) *
-      growth;
+    maturity += monthlyDeposit;
+    maturity *= 1 + monthlyRate;
   }
 
   const invested =
     monthlyDeposit * months;
 
   return {
-    invested,
-    interest:
-      maturity - invested,
-    maturity
+    invested: roundMoney(invested),
+    interest: roundMoney(
+      maturity - invested
+    ),
+    maturity: roundMoney(maturity)
   };
-}
-
-function validate(
-  ...values: number[]
-) {
-  if (
-    values.some(
-      (value) =>
-        !Number.isFinite(value) ||
-        value < 0
-    )
-  ) {
-    throw new Error(
-      "Please enter valid deposit values."
-    );
-  }
 }

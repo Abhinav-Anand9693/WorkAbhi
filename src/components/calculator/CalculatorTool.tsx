@@ -450,15 +450,28 @@ export default function CalculatorTool({
           break;
         }
 
-        case "gpa-calculator": {
-          output =
-            calculateGPA(
-              number("gradePoints"),
-              number("credits")
-            );
+       case "gpa-calculator": {
+  output = calculateGPA([
+    {
+      gradePoint: number("gradePoint1"),
+      credits: number("credit1")
+    },
+    {
+      gradePoint: number("gradePoint2"),
+      credits: number("credit2")
+    },
+    {
+      gradePoint: number("gradePoint3"),
+      credits: number("credit3")
+    },
+    {
+      gradePoint: number("gradePoint4"),
+      credits: number("credit4")
+    }
+  ]);
 
-          break;
-        }
+  break;
+}
 
         case "cgpa-calculator": {
           output =

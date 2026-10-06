@@ -1,3 +1,8 @@
+import {
+  assertFinite,
+  roundMoney
+} from "./calculatorMath";
+
 export interface EMIResult {
   monthlyEMI: number;
   totalInterest: number;
@@ -9,16 +14,20 @@ export function calculateEMI(
   annualRate: number,
   tenureMonths: number
 ): EMIResult {
+  assertFinite(
+    principal,
+    annualRate,
+    tenureMonths
+  );
+
   if (
     principal <= 0 ||
     annualRate < 0 ||
     tenureMonths <= 0 ||
-    !Number.isFinite(principal) ||
-    !Number.isFinite(annualRate) ||
-    !Number.isFinite(tenureMonths)
+    !Number.isInteger(tenureMonths)
   ) {
     throw new Error(
-      "Please enter valid loan values."
+      "Loan amount and tenure must be positive; interest rate cannot be negative."
     );
   }
 
@@ -28,24 +37,28 @@ export function calculateEMI(
   const monthlyEMI =
     monthlyRate === 0
       ? principal / tenureMonths
-      : (principal *
-          monthlyRate *
-          Math.pow(
-            1 + monthlyRate,
-            tenureMonths
-          )) /
-        (Math.pow(
-          1 + monthlyRate,
-          tenureMonths
-        ) - 1);
+      : principal *
+        monthlyRate *
+        ((1 + monthlyRate) **
+          tenureMonths) /
+        (((1 + monthlyRate) **
+          tenureMonths) -
+          1);
 
   const totalPayment =
     monthlyEMI * tenureMonths;
 
   return {
-    monthlyEMI,
-    totalInterest:
-      totalPayment - principal,
-    totalPayment
+    monthlyEMI: roundMoney(
+      monthlyEMI
+    ),
+
+    totalInterest: roundMoney(
+      totalPayment - principal
+    ),
+
+    totalPayment: roundMoney(
+      totalPayment
+    )
   };
 }

@@ -1064,28 +1064,63 @@ export const calculatorDefinitions:
     ]
   },
 
-  {
-    toolId: "gpa-calculator",
-    title: "GPA Calculator",
-    description:
-      "Calculate GPA from grades and credit hours.",
-    engine: "education",
-    fields: [
-      {
-        id: "gradePoints",
-        label: "Grade Points",
-        type: "number",
-        placeholder: "8.5"
-      },
-      {
-        id: "credits",
-        label: "Total Credits",
-        type: "number",
-        placeholder: "24"
-      }
-    ]
-  },
-
+ {
+  toolId: "gpa-calculator",
+  title: "GPA Calculator",
+  description:
+    "Calculate GPA from subject grade points and credit hours.",
+  engine: "education",
+  fields: [
+    {
+      id: "gradePoint1",
+      label: "Subject 1 Grade Point",
+      type: "number",
+      placeholder: "8.5"
+    },
+    {
+      id: "credit1",
+      label: "Subject 1 Credits",
+      type: "number",
+      placeholder: "4"
+    },
+    {
+      id: "gradePoint2",
+      label: "Subject 2 Grade Point",
+      type: "number",
+      placeholder: "9"
+    },
+    {
+      id: "credit2",
+      label: "Subject 2 Credits",
+      type: "number",
+      placeholder: "3"
+    },
+    {
+      id: "gradePoint3",
+      label: "Subject 3 Grade Point",
+      type: "number",
+      placeholder: "8"
+    },
+    {
+      id: "credit3",
+      label: "Subject 3 Credits",
+      type: "number",
+      placeholder: "4"
+    },
+    {
+      id: "gradePoint4",
+      label: "Subject 4 Grade Point",
+      type: "number",
+      placeholder: "8.5"
+    },
+    {
+      id: "credit4",
+      label: "Subject 4 Credits",
+      type: "number",
+      placeholder: "3"
+    }
+  ]
+},
   {
     toolId: "cgpa-calculator",
     title: "CGPA Calculator",
