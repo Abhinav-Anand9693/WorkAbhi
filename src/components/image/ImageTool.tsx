@@ -49,6 +49,12 @@ import type { ImageToolDefinition } from "@/types/image";
 interface ImageToolProps {
   toolId: string;
 }
+interface CompressionBatchResult {
+  fileName: string;
+  originalSize: number;
+  result: Blob | null;
+  error?: string;
+}
 
 type OutputFormat =
   | "image/jpeg"
@@ -126,6 +132,30 @@ const DEFAULT_SETTINGS: ProcessingSettings = {
   cropWidth: 500,
   cropHeight: 500,
 };
+const COMPRESSION_TOOL_IDS =
+  new Set([
+    "image-compressor",
+    "compress-image-to-50kb",
+    "compress-image-to-100kb",
+    "compress-image-to-200kb",
+    "compress-image-to-500kb",
+    "compress-image-to-1mb",
+    "jpg-compressor",
+    "png-compressor",
+    "webp-compressor",
+  ]);
+
+const MAX_COMPRESSION_FILES = 20;
+function throwIfBatchAborted(
+  signal: AbortSignal
+): void {
+  if (signal.aborted) {
+    throw new DOMException(
+      "Processing cancelled.",
+      "AbortError"
+    );
+  }
+}
 
 function formatBytes(bytes: number): string {
   if (!bytes) return "0 B";
@@ -140,6 +170,28 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, index)).toFixed(2)} ${
     units[index]
   }`;
+}
+function formatCompressionPercentage(
+  originalSize: number,
+  compressedSize: number
+): string {
+  if (
+    !Number.isFinite(originalSize) ||
+    originalSize <= 0 ||
+    !Number.isFinite(compressedSize)
+  ) {
+    return "0.00%";
+  }
+
+  const percentage =
+    ((originalSize - compressedSize) /
+      originalSize) *
+    100;
+
+  return `${Math.max(
+    0,
+    Math.min(100, percentage)
+  ).toFixed(2)}%`;
 }
 
 function downloadBlob(
@@ -544,58 +596,6 @@ async function processCanvasImage(
   );
 }
 
-async function createSafePreviewUrl(file: File): Promise<string> {
-  const MAX_PREVIEW_DIMENSION = 1600;
-
-  if (typeof createImageBitmap !== "function") {
-    return URL.createObjectURL(file);
-  }
-
-  try {
-    const bitmap = await createImageBitmap(file, {
-      resizeWidth: MAX_PREVIEW_DIMENSION,
-      resizeQuality: "high",
-      imageOrientation: "from-image",
-    });
-
-    const scale = Math.min(
-      1,
-      MAX_PREVIEW_DIMENSION / bitmap.width,
-      MAX_PREVIEW_DIMENSION / bitmap.height
-    );
-    const width = Math.max(1, Math.round(bitmap.width * scale));
-    const height = Math.max(1, Math.round(bitmap.height * scale));
-
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      bitmap.close();
-      return URL.createObjectURL(file);
-    }
-
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-    context.drawImage(bitmap, 0, 0, width, height);
-    bitmap.close();
-
-    const previewBlob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob(resolve, "image/jpeg", 0.82);
-    });
-    canvas.width = 1;
-    canvas.height = 1;
-
-    if (!previewBlob) {
-      return URL.createObjectURL(file);
-    }
-
-    return URL.createObjectURL(previewBlob);
-  } catch {
-    return URL.createObjectURL(file);
-  }
-}
-
 export default function ImageTool({
   toolId,
 }: ImageToolProps) {
@@ -629,6 +629,12 @@ export default function ImageTool({
     resultFiles,
     setResultFiles,
   ] = useState<Blob[]>([]);
+  const [
+  compressionResults,
+  setCompressionResults,
+] = useState<
+  CompressionBatchResult[]
+>([]);
 
   const [settings, setSettings] =
     useState<ProcessingSettings>(
@@ -726,14 +732,22 @@ const abortControllerRef =
    * Determine whether this tool supports
    * multiple images.
    */
-  const isMultiple =
-    definition.multiple === true ||
-    toolId === "image-overlay" ||
-    toolId === "image-collage-maker" ||
-    toolId === "image-merger";
+  const isCompressionTool =
+  COMPRESSION_TOOL_IDS.has(
+    toolId
+  );
 
-  const maxFiles =
-    toolId === "image-merger"
+const isMultiple =
+  definition.multiple === true ||
+  isCompressionTool ||
+  toolId === "image-overlay" ||
+  toolId === "image-collage-maker" ||
+  toolId === "image-merger";
+
+const maxFiles =
+  isCompressionTool
+    ? MAX_COMPRESSION_FILES
+    : toolId === "image-merger"
       ? 20
       : toolId === "image-collage-maker"
         ? 12
@@ -748,46 +762,55 @@ const abortControllerRef =
    * For multiple-image tools we APPEND
    * new files instead of replacing them.
    */
-  async function handleFiles(
-    selectedFiles: File[]
-  ) {
-    if (!selectedFiles.length) {
-      return;
+  function handleFiles(
+  selectedFiles: File[]
+) {
+  if (!selectedFiles.length) {
+    return;
+  }
+
+  let nextFiles: File[];
+
+  if (isMultiple) {
+    const combined = [
+      ...files,
+      ...selectedFiles,
+    ];
+
+    const uniqueFiles =
+      combined.filter(
+        (file, index, array) =>
+          array.findIndex(
+            (candidate) =>
+              candidate.name ===
+                file.name &&
+              candidate.size ===
+                file.size &&
+              candidate.lastModified ===
+                file.lastModified
+          ) === index
+      );
+
+    nextFiles =
+      uniqueFiles.slice(
+        0,
+        maxFiles
+      );
+  } else {
+    nextFiles = [
+      selectedFiles[0],
+    ];
+  }
+
+  if (isCompressionTool) {
+    if (originalPreview) {
+      URL.revokeObjectURL(
+        originalPreview
+      );
     }
 
-    let nextFiles: File[];
-
-    if (isMultiple) {
-      const combined = [
-        ...files,
-        ...selectedFiles,
-      ];
-
-      const uniqueFiles =
-        combined.filter(
-          (file, index, array) =>
-            array.findIndex(
-              (candidate) =>
-                candidate.name ===
-                  file.name &&
-                candidate.size ===
-                  file.size &&
-                candidate.lastModified ===
-                  file.lastModified
-            ) === index
-        );
-
-      nextFiles =
-        uniqueFiles.slice(
-          0,
-          maxFiles
-        );
-    } else {
-      nextFiles = [
-        selectedFiles[0],
-      ];
-    }
-
+    setOriginalPreview(null);
+  } else {
     /**
      * If the first image changed,
      * recreate the original preview.
@@ -803,7 +826,7 @@ const abortControllerRef =
       }
 
       const previewUrl =
-        await createSafePreviewUrl(
+        URL.createObjectURL(
           nextFiles[0]
         );
 
@@ -811,26 +834,27 @@ const abortControllerRef =
         previewUrl
       );
     }
-
-    if (resultPreview) {
-      URL.revokeObjectURL(
-        resultPreview
-      );
-    }
-
-    setFiles(nextFiles);
-
-    setResult(null);
-    setResultFiles([]);
-    setResultPreview(null);
-
-    setMetadata(null);
-    setDataUrl("");
-    setPickedColor(null);
-
-    setError("");
   }
 
+  if (resultPreview) {
+    URL.revokeObjectURL(
+      resultPreview
+    );
+  }
+
+  setFiles(nextFiles);
+
+  setResult(null);
+  setResultFiles([]);
+  setCompressionResults([]);
+  setResultPreview(null);
+
+  setMetadata(null);
+  setDataUrl("");
+  setPickedColor(null);
+
+  setError("");
+}
   /**
    * Reset everything.
    */
@@ -851,6 +875,7 @@ const abortControllerRef =
 
     setResult(null);
     setResultFiles([]);
+    setCompressionResults([]);
 
     setOriginalPreview(null);
     setResultPreview(null);
@@ -892,125 +917,157 @@ const abortControllerRef =
     setResultFiles([]);
 
     try {
-      const primaryFile =
-        files[0];
+    const primaryFile = files[0];
 
-      let output:
-        | Blob
-        | null = null;
+let output:
+  | Blob
+  | null = null;
 
-      let outputs: Blob[] = [];
+let outputs: Blob[] = [];
 
-      /*
-       * ========================================
-       * COMPRESSION
-       * ========================================
-       */
+     /*
+ * ========================================
+ * COMPRESSION
+ * ========================================
+ */
+
+if (isCompressionTool) {
+  const batchResults: CompressionBatchResult[] = [];
+
+  for (const file of files) {
+    throwIfBatchAborted(controller.signal);
+
+    try {
+      let compressedOutput: Blob;
 
       if (
-        toolId ===
-        "image-compressor"
+        toolId === "image-compressor" ||
+        toolId === "jpg-compressor"
       ) {
-        output =
-          await compressImage(
-            primaryFile,
-            {
-              quality:
-                settings.quality / 100,
-            }
-          );
-      }
-
-      else if (
-        toolId ===
-          "compress-image-to-50kb" ||
-        toolId ===
-          "compress-image-to-100kb" ||
-        toolId ===
-          "compress-image-to-200kb" ||
-        toolId ===
-          "compress-image-to-500kb" ||
-        toolId ===
-          "compress-image-to-1mb"
-      ) {
-        const targetMap:
-          Record<string, number> =
+        compressedOutput = await compressImage(
+          file,
           {
-            "compress-image-to-50kb":
-              50,
-
-            "compress-image-to-100kb":
-              100,
-
-            "compress-image-to-200kb":
-              200,
-
-            "compress-image-to-500kb":
-              500,
-
-            "compress-image-to-1mb":
-              1024,
-          };
-
-                output = await compressToTargetSize(
-          primaryFile,
-          {
-            targetKB: targetMap[toolId],
+            quality: settings.quality / 100,
             outputType: "image/jpeg",
             signal: controller.signal,
             onProgress: setProcessingStage,
           }
         );
-      }
-
-      else if (
-        toolId ===
-        "jpg-compressor"
+      } else if (
+        toolId === "png-compressor"
       ) {
-        output = await compressImage(
-  primaryFile,
-  {
-    quality:
-      settings.quality / 100,
-    outputType: "image/jpeg",
-    signal: controller.signal,
-    onProgress: setProcessingStage,
-  }
-);
-      }
-
-      else if (
-        toolId ===
-        "png-compressor"
+        compressedOutput = await compressImage(
+          file,
+          {
+            quality: 1,
+            outputType: "image/png",
+            signal: controller.signal,
+            onProgress: setProcessingStage,
+          }
+        );
+      } else if (
+        toolId === "webp-compressor"
       ) {
-        output =
-          await compressImage(
-            primaryFile,
-            {
-              quality: 1,
+        compressedOutput = await compressImage(
+          file,
+          {
+            quality: settings.quality / 100,
+            outputType: "image/webp",
+            signal: controller.signal,
+            onProgress: setProcessingStage,
+          }
+        );
+      } else {
+        const targetMap: Record<string, number> = {
+          "compress-image-to-50kb": 50,
+          "compress-image-to-100kb": 100,
+          "compress-image-to-200kb": 200,
+          "compress-image-to-500kb": 500,
+          "compress-image-to-1mb": 1024,
+        };
 
-              outputType:
-                "image/png",
-            }
+        const targetKB = targetMap[toolId];
+
+        if (!targetKB) {
+          throw new Error(
+            `Unsupported compression tool: ${toolId}`
           );
-      }
+        }
 
-      else if (
-        toolId ===
-        "webp-compressor"
-      ) {
-                output = await compressImage(
-            primaryFile,
+        compressedOutput =
+          await compressToTargetSize(
+            file,
             {
-              quality:
-                settings.quality / 100,
-              outputType: "image/webp",
+              targetKB,
+              outputType: "image/jpeg",
               signal: controller.signal,
               onProgress: setProcessingStage,
             }
           );
       }
 
+      batchResults.push({
+        fileName: file.name,
+        originalSize: file.size,
+        result: compressedOutput,
+      });
+
+      outputs.push(compressedOutput);
+
+      setCompressionResults([
+        ...batchResults,
+      ]);
+    } catch (error) {
+      if (
+        error instanceof DOMException &&
+        error.name === "AbortError"
+      ) {
+        throw error;
+      }
+
+      batchResults.push({
+        fileName: file.name,
+        originalSize: file.size,
+        result: null,
+        error:
+          error instanceof Error
+            ? error.message
+            : "Unable to process this image on this device.",
+      });
+
+      setCompressionResults([
+        ...batchResults,
+      ]);
+    }
+
+    /*
+     * Critical for mobile:
+     *
+     * Yield to the browser before
+     * processing the next image so
+     * memory can be released.
+     */
+    await new Promise<void>((resolve) =>
+      window.setTimeout(resolve, 0)
+    );
+  }
+
+  if (!outputs.length) {
+    throw new Error(
+      "None of the selected images could be processed on this device."
+    );
+  }
+
+  setResult(
+    outputs[outputs.length - 1]
+  );
+
+  setResultFiles(outputs);
+
+  setProcessingStage("complete");
+
+  return;
+}
       /*
        * ========================================
        * RESIZE
@@ -2360,12 +2417,146 @@ const abortControllerRef =
           </div>
         </section>
       )}
+          {/* ========================================
+    COMPRESSION RESULTS
+======================================== */}
 
+{isCompressionTool &&
+  compressionResults.length > 0 && (
+    <section className="rounded-2xl border bg-background p-6">
+      <div>
+        <h3 className="text-lg font-semibold">
+          Compression Results
+        </h3>
+
+        <p className="mt-1 text-sm text-muted-foreground">
+          Your images were compressed successfully.
+        </p>
+      </div>
+
+      <div className="mt-5 space-y-3">
+        {compressionResults.map(
+          (item, index) => {
+            const compressedSize =
+              item.result?.size ?? 0;
+
+            const savedPercentage =
+              item.result
+                ? formatCompressionPercentage(
+                    item.originalSize,
+                    compressedSize
+                  )
+                : null;
+
+            return (
+              <div
+                key={`${item.fileName}-${item.originalSize}-${index}`}
+                className="rounded-xl border bg-muted/10 p-4"
+              >
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p
+                      className="truncate font-medium"
+                      title={item.fileName}
+                    >
+                      {item.fileName}
+                    </p>
+
+                    {item.result ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+                        <span className="text-muted-foreground">
+                          Original:
+                          {" "}
+                          <strong className="text-foreground">
+                            {formatBytes(
+                              item.originalSize
+                            )}
+                          </strong>
+                        </span>
+
+                        <span className="text-muted-foreground">
+                          Compressed:
+                          {" "}
+                          <strong className="text-foreground">
+                            {formatBytes(
+                              compressedSize
+                            )}
+                          </strong>
+                        </span>
+
+                        <span className="font-semibold text-green-600 dark:text-green-400">
+                          {savedPercentage} smaller
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-sm text-destructive">
+                        {item.error ??
+                          "Unable to process this image."}
+                      </p>
+                    )}
+                  </div>
+
+                  {item.result && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const extension =
+                          getOutputExtension(
+                            item.result!.type
+                          );
+
+                        const baseName =
+                          item.fileName.replace(
+                            /\.[^/.]+$/,
+                            ""
+                          );
+
+                        downloadBlob(
+                          item.result!,
+                          `workabhi-${baseName}-compressed.${extension}`
+                        );
+                      }}
+                      className="shrink-0 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+                    >
+                      Download
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          }
+        )}
+      </div>
+
+      {compressionResults.some(
+        (item) => item.result !== null
+      ) && (
+        <div className="mt-5 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={downloadAllResults}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            Download All
+          </button>
+
+          <button
+            type="button"
+            onClick={resetTool}
+            disabled={loading}
+            className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+          >
+            Compress More
+          </button>
+        </div>
+      )}
+    </section>
+  )}
       {/* ========================================
           NORMAL IMAGE PREVIEW
       ======================================== */}
 
-      {files.length > 0 &&
+      {files.length > 0 &&  !isCompressionTool &&
         toolId !==
           "image-color-picker" &&
         toolId !==

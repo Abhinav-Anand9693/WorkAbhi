@@ -1,262 +1,658 @@
 /* WorkAbhi browser image compression worker. */
 
-type OutputFormat = "image/jpeg" | "image/png" | "image/webp";
-type Stage = "reading" | "optimizing-resolution" | "compressing" | "finalizing" | "complete";
+type OutputFormat =
+  | "image/jpeg"
+  | "image/png"
+  | "image/webp";
 
-type RequestMessage = {
+type Stage =
+  | "reading"
+  | "compressing"
+  | "finalizing"
+  | "complete";
+
+interface RequestMessage {
   id: number;
   file: Blob;
   outputType: OutputFormat;
   quality: number;
+
   targetBytes?: number;
-  width?: number;
-  height?: number;
-  maxWidth?: number;
-  maxHeight?: number;
-};
+
+  expectedWidth?: number;
+  expectedHeight?: number;
+
+  resizeWidth?: number;
+  resizeHeight?: number;
+}
 
 type ResponseMessage =
-  | { id: number; type: "progress"; stage: Stage }
-  | { id: number; type: "success"; blob: Blob; width: number; height: number }
-  | { id: number; type: "error"; error: string };
+  | {
+      id: number;
+      type: "progress";
+      stage: Stage;
+    }
+  | {
+      id: number;
+      type: "success";
+      blob: Blob;
+      width: number;
+      height: number;
+    }
+  | {
+      id: number;
+      type: "error";
+      error: string;
+    };
 
+const MAX_QUALITY = 0.95;
 const MIN_QUALITY = 0.04;
-const MAX_QUALITY = 0.92;
-const MAX_QUALITY_ATTEMPTS = 7;
-const MAX_TARGET_RESOLUTION_ATTEMPTS = 4;
+const QUALITY_ATTEMPTS = 8;
+
 const MAX_CANVAS_DIMENSION = 32767;
-const MAX_WORKING_PIXELS = 16_000_000;
+
 const cancelled = new Set<number>();
 
 function post(message: ResponseMessage): void {
   self.postMessage(message);
 }
 
-function throwIfCancelled(id: number): void {
+function checkCancelled(id: number): void {
   if (cancelled.has(id)) {
-    throw new DOMException("Processing cancelled.", "AbortError");
+    throw new DOMException(
+      "Processing cancelled.",
+      "AbortError"
+    );
   }
 }
 
-function clampQuality(value: number): number {
-  return Math.min(MAX_QUALITY, Math.max(MIN_QUALITY, value));
+/**
+ * Creates a real ArrayBuffer from a Uint8Array.
+ *
+ * This avoids the newer TypeScript
+ * ArrayBufferLike -> BlobPart incompatibility.
+ */
+function toArrayBuffer(
+  bytes: Uint8Array
+): ArrayBuffer {
+  const buffer = new ArrayBuffer(
+    bytes.byteLength
+  );
+
+  new Uint8Array(buffer).set(bytes);
+
+  return buffer;
 }
 
-function assertDimensions(width: number, height: number): void {
+function clampQuality(
+  quality: number
+): number {
+  return Math.min(
+    MAX_QUALITY,
+    Math.max(
+      MIN_QUALITY,
+      quality
+    )
+  );
+}
+
+function assertDimensions(
+  width: number,
+  height: number
+): void {
   if (
     !Number.isFinite(width) ||
     !Number.isFinite(height) ||
     width < 1 ||
-    height < 1 ||
-    width > MAX_CANVAS_DIMENSION ||
-    height > MAX_CANVAS_DIMENSION ||
-    width * height > MAX_WORKING_PIXELS
+    height < 1
   ) {
     throw new Error(
-      `The image is too large for safe browser processing at ${Math.round(width)}×${Math.round(height)}. Use a resize or a larger target size.`
+      "Invalid image dimensions."
+    );
+  }
+
+  if (
+    width > MAX_CANVAS_DIMENSION ||
+    height > MAX_CANVAS_DIMENSION
+  ) {
+    throw new Error(
+      `This browser cannot safely create a ${Math.round(
+        width
+      )}×${Math.round(
+        height
+      )} output image.`
     );
   }
 }
 
-function calculateDimensions(
-  width: number,
-  height: number,
-  maxWidth?: number,
-  maxHeight?: number,
-): { width: number; height: number } {
-  let scale = 1;
-  if (maxWidth && width > maxWidth) scale = Math.min(scale, maxWidth / width);
-  if (maxHeight && height > maxHeight) scale = Math.min(scale, maxHeight / height);
+/**
+ * Load SIP inside the worker.
+ *
+ * IMPORTANT:
+ * Do not use a variable named `module`.
+ * Next.js reserves that identifier in its
+ * module environment and ESLint reports it.
+ */
+async function loadSip(): Promise<any> {
+  const url = new URL(
+    "/workabhi-codecs/sip/index.js",
+    self.location.origin
+  ).href;
 
-  let nextWidth = Math.max(1, Math.round(width * scale));
-  let nextHeight = Math.max(1, Math.round(height * scale));
+  const codecModule = await import(
+    /* webpackIgnore: true */
+    url
+  );
 
-  const pixels = nextWidth * nextHeight;
-  if (pixels > MAX_WORKING_PIXELS) {
-    const safetyScale = Math.sqrt(MAX_WORKING_PIXELS / pixels);
-    nextWidth = Math.max(1, Math.floor(nextWidth * safetyScale));
-    nextHeight = Math.max(1, Math.floor(nextHeight * safetyScale));
-  }
-
-  return { width: nextWidth, height: nextHeight };
+  return codecModule;
 }
 
-function targetMaxDimension(targetKB: number): number {
-  if (targetKB <= 50) return 1000;
-  if (targetKB <= 100) return 1200;
-  if (targetKB <= 200) return 1600;
-  if (targetKB <= 500) return 2200;
-  if (targetKB <= 1024) return 2800;
-  return 3600;
-}
+async function sipEncode(
+  input: Blob,
+  width: number | undefined,
+  height: number | undefined,
+  quality: number
+): Promise<{
+  data: Uint8Array;
+  info: {
+    width: number;
+    height: number;
+  };
+}> {
+  /*
+   * Important:
+   *
+   * SIP is intentionally loaded inside
+   * the worker. The main UI thread never
+   * needs to decode the original JPEG.
+   */
+  const bytes =
+    await input.arrayBuffer();
 
-async function render(
-  file: Blob,
-  width: number,
-  height: number,
-  outputType: OutputFormat,
-  quality: number,
-  id: number,
-): Promise<Blob> {
-  throwIfCancelled(id);
-  assertDimensions(width, height);
+  const sip = await loadSip();
 
-  if (typeof createImageBitmap !== "function") {
-    throw new Error("This browser cannot decode images in the compression worker.");
+  await sip.ready();
+
+  const options: Record<
+    string,
+    unknown
+  > = {
+    quality: Math.round(
+      clampQuality(
+        quality
+      ) * 100
+    ),
+  };
+
+  if (
+    width &&
+    height
+  ) {
+    options.width = width;
+    options.height = height;
   }
 
-  let bitmap: ImageBitmap | null = await createImageBitmap(file, {
-    resizeWidth: width,
-    resizeHeight: height,
-    resizeQuality: "high",
-    imageOrientation: "from-image",
+  const image =
+    sip.transform(
+      bytes,
+      options
+    );
+
+  return await sip.collect(
+    image
+  );
+}
+
+async function compressJpeg(
+  request: RequestMessage
+): Promise<{
+  blob: Blob;
+  width: number;
+  height: number;
+}> {
+  checkCancelled(
+    request.id
+  );
+
+  post({
+    id: request.id,
+    type: "progress",
+    stage: "reading",
   });
 
-  let canvas: OffscreenCanvas | null = null;
-  try {
-    throwIfCancelled(id);
-    canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const context = canvas.getContext("2d", {
-      alpha: outputType !== "image/jpeg",
-    });
-    if (!context) throw new Error("OffscreenCanvas 2D is unavailable on this device.");
+  const width =
+    request.resizeWidth ??
+    request.expectedWidth;
 
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-    if (outputType === "image/jpeg") {
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, bitmap.width, bitmap.height);
+  const height =
+    request.resizeHeight ??
+    request.expectedHeight;
+
+  /*
+   * Normal JPEG compression.
+   */
+  if (
+    !request.targetBytes
+  ) {
+    const encoded =
+      await sipEncode(
+        request.file,
+        width,
+        height,
+        request.quality
+      );
+
+    checkCancelled(
+      request.id
+    );
+
+    return {
+      /*
+       * IMPORTANT:
+       * Convert Uint8Array to a real
+       * ArrayBuffer before passing it
+       * to Blob().
+       */
+      blob: new Blob(
+        [
+          toArrayBuffer(
+            encoded.data
+          ),
+        ],
+        {
+          type: "image/jpeg",
+        }
+      ),
+
+      width:
+        encoded.info.width,
+
+      height:
+        encoded.info.height,
+    };
+  }
+
+  /*
+   * Target-size JPEG compression.
+   */
+  let low =
+    MIN_QUALITY;
+
+  let high =
+    MAX_QUALITY;
+
+  let best:
+    | Blob
+    | null = null;
+
+  let bestSize =
+    Infinity;
+
+  for (
+    let attempt = 0;
+    attempt <
+      QUALITY_ATTEMPTS;
+    attempt++
+  ) {
+    checkCancelled(
+      request.id
+    );
+
+    post({
+      id: request.id,
+      type: "progress",
+      stage: "compressing",
+    });
+
+    const quality =
+      attempt === 0
+        ? MAX_QUALITY
+        : (low + high) / 2;
+
+    const encoded =
+      await sipEncode(
+        request.file,
+        width,
+        height,
+        quality
+      );
+
+    checkCancelled(
+      request.id
+    );
+
+    const blob =
+      new Blob(
+        [
+          toArrayBuffer(
+            encoded.data
+          ),
+        ],
+        {
+          type: "image/jpeg",
+        }
+      );
+
+    if (
+      blob.size <=
+      request.targetBytes
+    ) {
+      if (
+        blob.size <
+        bestSize
+      ) {
+        best = blob;
+
+        bestSize =
+          blob.size;
+      }
+
+      low = quality;
+    } else {
+      high = quality;
     }
-    context.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height);
+  }
+
+  if (!best) {
+    throw new Error(
+      `Unable to reach ${Math.round(
+        request.targetBytes / 1024
+      )} KB at the planned resolution.`
+    );
+  }
+
+  return {
+    blob: best,
+    width: width!,
+    height: height!,
+  };
+}
+
+async function canvasBlob(
+  canvas: OffscreenCanvas,
+  type: OutputFormat,
+  quality: number
+): Promise<Blob> {
+  return canvas.convertToBlob({
+    type,
+
+    ...(type === "image/png"
+      ? {}
+      : {
+          quality:
+            clampQuality(
+              quality
+            ),
+        }),
+  });
+}
+
+self.onmessage = async (
+  event: MessageEvent<
+    | RequestMessage
+    | {
+        type: "cancel";
+        id: number;
+      }
+  >
+) => {
+  const message =
+    event.data;
+
+  if (
+    "type" in message &&
+    message.type === "cancel"
+  ) {
+    cancelled.add(
+      message.id
+    );
+
+    return;
+  }
+
+  const request =
+    message as RequestMessage;
+
+  let bitmap:
+    | ImageBitmap
+    | null = null;
+
+  let canvas:
+    | OffscreenCanvas
+    | null = null;
+
+  try {
+    checkCancelled(
+      request.id
+    );
+
+    post({
+      id: request.id,
+      type: "progress",
+      stage: "reading",
+    });
+
+    /*
+     * JPEG MUST use SIP.
+     *
+     * Do not fall through to
+     * createImageBitmap for JPEG.
+     */
+    if (
+      request.outputType ===
+      "image/jpeg"
+    ) {
+      const result =
+        await compressJpeg(
+          request
+        );
+
+      checkCancelled(
+        request.id
+      );
+
+      if (
+        request.expectedWidth &&
+        request.expectedHeight &&
+        (
+          result.width !==
+            request.expectedWidth ||
+          result.height !==
+            request.expectedHeight
+        )
+      ) {
+        throw new Error(
+          `The codec returned ${result.width}×${result.height}, but WorkAbhi expected ${request.expectedWidth}×${request.expectedHeight}.`
+        );
+      }
+
+      post({
+        id: request.id,
+        type: "progress",
+        stage: "finalizing",
+      });
+
+      post({
+        id: request.id,
+        type: "success",
+        blob: result.blob,
+        width: result.width,
+        height: result.height,
+      });
+
+      return;
+    }
+
+    /*
+     * PNG/WebP continue using the existing
+     * browser-native path.
+     *
+     * This keeps the rest of the image
+     * tools stable.
+     */
+    if (
+      typeof createImageBitmap !==
+      "function"
+    ) {
+      throw new Error(
+        "This browser does not support worker image decoding."
+      );
+    }
+
+    bitmap =
+      await createImageBitmap(
+        request.file,
+        {
+          ...(request.resizeWidth &&
+          request.resizeHeight
+            ? {
+                resizeWidth:
+                  request.resizeWidth,
+
+                resizeHeight:
+                  request.resizeHeight,
+
+                resizeQuality:
+                  "high" as const,
+              }
+            : {}),
+
+          imageOrientation:
+            "from-image",
+        }
+      );
+
+    checkCancelled(
+      request.id
+    );
+
+    const width =
+      bitmap.width;
+
+    const height =
+      bitmap.height;
+
+    assertDimensions(
+      width,
+      height
+    );
+
+    if (
+      request.expectedWidth &&
+      request.expectedHeight &&
+      (
+        width !==
+          request.expectedWidth ||
+        height !==
+          request.expectedHeight
+      )
+    ) {
+      throw new Error(
+        `The browser decoded this image as ${width}×${height}, but WorkAbhi expected ${request.expectedWidth}×${request.expectedHeight}.`
+      );
+    }
+
+    canvas =
+      new OffscreenCanvas(
+        width,
+        height
+      );
+
+    const context =
+      canvas.getContext(
+        "2d",
+        {
+          alpha: true,
+        }
+      );
+
+    if (!context) {
+      throw new Error(
+        "OffscreenCanvas 2D is not available on this device."
+      );
+    }
+
+    context.imageSmoothingEnabled =
+      true;
+
+    context.imageSmoothingQuality =
+      "high";
+
+    context.drawImage(
+      bitmap,
+      0,
+      0,
+      width,
+      height
+    );
+
     bitmap.close();
+
     bitmap = null;
 
-    throwIfCancelled(id);
-    return canvas.convertToBlob({
-      type: outputType,
-      ...(outputType === "image/png" ? {} : { quality: clampQuality(quality) }),
+    post({
+      id: request.id,
+      type: "progress",
+      stage: "compressing",
+    });
+
+    if (
+      request.targetBytes
+    ) {
+      throw new Error(
+        "Target-size compression is supported only for JPEG."
+      );
+    }
+
+    const blob =
+      await canvasBlob(
+        canvas,
+        request.outputType,
+        request.quality
+      );
+
+    checkCancelled(
+      request.id
+    );
+
+    post({
+      id: request.id,
+      type: "progress",
+      stage: "finalizing",
+    });
+
+    post({
+      id: request.id,
+      type: "success",
+      blob,
+      width,
+      height,
+    });
+  } catch (error) {
+    /*
+     * AbortError is intentionally returned
+     * as an error message to the caller.
+     * The main thread already handles the
+     * AbortError from its own signal.
+     */
+    post({
+      id: request.id,
+      type: "error",
+      error:
+        error instanceof Error
+          ? error.message
+          : "Image compression failed.",
     });
   } finally {
     bitmap?.close();
+
+    cancelled.delete(
+      request.id
+    );
+
     if (canvas) {
       canvas.width = 1;
       canvas.height = 1;
     }
-  }
-}
-
-async function compressTarget(
-  request: RequestMessage,
-): Promise<{ blob: Blob; width: number; height: number }> {
-  if (request.outputType === "image/png") {
-    throw new Error("PNG target-size compression requires a PNG-specific optimizer; choose JPEG target-size compression.");
-  }
-
-  if (!request.width || !request.height || !request.targetBytes) {
-    throw new Error("Missing image dimensions for target-size compression.");
-  }
-
-  const baseMax = targetMaxDimension(request.targetBytes / 1024);
-  const initial = calculateDimensions(request.width, request.height, baseMax, baseMax);
-  const candidates = [
-    initial,
-    calculateDimensions(request.width, request.height, baseMax * 0.8, baseMax * 0.8),
-    calculateDimensions(request.width, request.height, baseMax * 0.62, baseMax * 0.62),
-    calculateDimensions(request.width, request.height, baseMax * 0.45, baseMax * 0.45),
-  ];
-
-  const unique = candidates.filter((candidate, index, array) =>
-    array.findIndex((item) => item.width === candidate.width && item.height === candidate.height) === index,
-  );
-
-  let lastSize = 0;
-  for (let candidateIndex = 0; candidateIndex < Math.min(unique.length, MAX_TARGET_RESOLUTION_ATTEMPTS); candidateIndex += 1) {
-    const dimensions = unique[candidateIndex];
-    throwIfCancelled(request.id);
-    post({ id: request.id, type: "progress", stage: "optimizing-resolution" });
-
-    let low = MIN_QUALITY;
-    let high = MAX_QUALITY;
-    let best: Blob | null = null;
-
-    for (let attempt = 0; attempt < MAX_QUALITY_ATTEMPTS; attempt += 1) {
-      throwIfCancelled(request.id);
-      post({ id: request.id, type: "progress", stage: "compressing" });
-      const quality = attempt === 0 ? MAX_QUALITY : (low + high) / 2;
-      const blob = await render(fileFromRequest(request), dimensions.width, dimensions.height, request.outputType, quality, request.id);
-      lastSize = blob.size;
-
-      if (blob.size <= request.targetBytes) {
-        best = blob;
-        low = quality;
-      } else {
-        high = quality;
-      }
-    }
-
-    if (best) {
-      return { blob: best, width: dimensions.width, height: dimensions.height };
-    }
-  }
-
-  throw new Error(
-    `Unable to reach ${Math.round(request.targetBytes / 1024)} KB. The closest attempt was ${Math.round(lastSize / 1024)} KB. Try a larger target size.`,
-  );
-}
-
-// Blob/File objects are retained in the request object by structured clone.
-function fileFromRequest(request: RequestMessage): Blob {
-  return request.file;
-}
-
-self.onmessage = async (event: MessageEvent<RequestMessage | { type: "cancel"; id: number }>) => {
-  const message = event.data;
-  if ("type" in message && message.type === "cancel") {
-    cancelled.add(message.id);
-    return;
-  }
-
-  const request = message as RequestMessage;
-  try {
-    throwIfCancelled(request.id);
-    post({ id: request.id, type: "progress", stage: "reading" });
-
-    if (!request.width || !request.height) {
-      throw new Error("Image dimensions were not supplied by the browser-side inspector.");
-    }
-
-    const dimensions = calculateDimensions(
-      request.width,
-      request.height,
-      request.maxWidth,
-      request.maxHeight,
-    );
-
-    if (request.targetBytes) {
-      const result = await compressTarget(request);
-      post({ id: request.id, type: "progress", stage: "finalizing" });
-      post({ id: request.id, type: "success", ...result });
-      return;
-    }
-
-    const blob = await render(
-      fileFromRequest(request),
-      dimensions.width,
-      dimensions.height,
-      request.outputType,
-      request.quality,
-      request.id,
-    );
-
-    post({ id: request.id, type: "progress", stage: "finalizing" });
-    post({ id: request.id, type: "success", blob, width: dimensions.width, height: dimensions.height });
-  } catch (error) {
-    post({
-      id: request.id,
-      type: "error",
-      error: error instanceof Error ? error.message : "Image compression failed.",
-    });
-  } finally {
-    cancelled.delete(request.id);
   }
 };

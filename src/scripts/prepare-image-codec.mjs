@@ -1,11 +1,60 @@
-import { cp, mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const source = join(process.cwd(), 'node_modules', '@standardagents', 'sip', 'dist');
-const destination = join(process.cwd(), 'public', 'workabhi-codecs', 'sip');
-await rm(destination, { recursive: true, force: true });
-await mkdir(destination, { recursive: true });
-for (const file of ['index.js', 'index.d.ts', 'sip.js', 'sip.wasm']) {
-  await cp(join(source, file), join(destination, file));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const projectRoot = path.resolve(__dirname, "..");
+
+const sourceDir = path.join(
+  projectRoot,
+  "node_modules",
+  "@standardagents",
+  "sip",
+  "dist"
+);
+
+const outputDir = path.join(
+  projectRoot,
+  "public",
+  "workabhi-codecs",
+  "sip"
+);
+
+const requiredFiles = [
+  "index.js",
+  "sip.js",
+  "sip.wasm",
+];
+
+if (!fs.existsSync(sourceDir)) {
+  throw new Error(
+    `SIP package was not found at ${sourceDir}. Run npm install first.`
+  );
 }
-console.log('Prepared WorkAbhi SIP codec assets.');
+
+fs.mkdirSync(outputDir, {
+  recursive: true,
+});
+
+for (const file of requiredFiles) {
+  const source = path.join(sourceDir, file);
+  const destination = path.join(outputDir, file);
+
+  if (!fs.existsSync(source)) {
+    throw new Error(
+      `Required SIP codec file is missing: ${source}`
+    );
+  }
+
+  fs.copyFileSync(source, destination);
+
+  console.log(
+    `[WorkAbhi] Prepared SIP codec: ${file}`
+  );
+}
+
+console.log(
+  "[WorkAbhi] Image codec preparation complete."
+);
