@@ -268,8 +268,18 @@ function makeFlipProcessor(direction: "horizontal" | "vertical", width: number, 
   const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(width, height) : document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new VideoEngineError("BROWSER_UNSUPPORTED", "Canvas processing is unavailable in this browser.");
+ const ctx =
+  canvas.getContext("2d") as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
+
+if (!ctx) {
+  throw new VideoEngineError(
+    "BROWSER_UNSUPPORTED",
+    "Canvas processing is unavailable in this browser."
+  );
+}
   return (sample: import("mediabunny").VideoSample) => {
     const source = sample.toCanvasImageSource();
     ctx.save();
@@ -665,8 +675,18 @@ async function extractFrames(file: File, options: VideoProcessOptions): Promise<
     const fitted = fitWithinBounds(orientedWidth, orientedHeight, DEFAULT_VIDEO_LIMITS.maxExtractDimension, DEFAULT_VIDEO_LIMITS.maxExtractDimension);
     const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(fitted.width, fitted.height) : document.createElement("canvas");
     canvas.width = fitted.width; canvas.height = fitted.height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new VideoEngineError("BROWSER_UNSUPPORTED", "Canvas processing is unavailable.");
+    const ctx =
+  canvas.getContext("2d") as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null;
+
+if (!ctx) {
+  throw new VideoEngineError(
+    "BROWSER_UNSUPPORTED",
+    "Canvas processing is unavailable."
+  );
+}
     const results: Array<{ blob: Blob; filename: string }> = [];
     let totalOutputBytes = 0;
     for (let i = 0; i < count; i += 1) {
