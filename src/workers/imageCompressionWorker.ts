@@ -1,3 +1,5 @@
+import { getExpectedOutputDimensions } from "../engine/image/imageDimensionValidation";
+
 /* WorkAbhi image compression worker — production codec path. */
 
 type OutputFormat =
@@ -540,18 +542,18 @@ self.onmessage =
          * Validate dimensions returned by
          * the codec.
          */
+        const expectedOutput =
+          getExpectedOutputDimensions(request);
+
         if (
-          request.expectedWidth &&
-          request.expectedHeight &&
+          expectedOutput &&
           (
-            result.width !==
-              request.expectedWidth ||
-            result.height !==
-              request.expectedHeight
+            result.width !== expectedOutput.width ||
+            result.height !== expectedOutput.height
           )
         ) {
           throw new Error(
-            `The codec returned ${result.width}×${result.height}, but WorkAbhi expected ${request.expectedWidth}×${request.expectedHeight}.`
+            `The codec returned ${result.width}×${result.height}, but WorkAbhi expected output ${expectedOutput.width}×${expectedOutput.height}.`
           );
         }
 
